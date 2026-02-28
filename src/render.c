@@ -314,6 +314,7 @@ static void draw_scan_screen(const LanScannerMetrics *scanner,
                              const ProxyClientMetrics *proxy,
                              ScanDataSource source,
                              int scroll,
+                             int selected_host_index,
                              vita2d_pgf *font) {
   const int showing_proxy = (source == SCAN_SOURCE_PROXY);
 
@@ -410,7 +411,9 @@ static void draw_scan_screen(const LanScannerMetrics *scanner,
   for (int r = 0; r < rows_visible; r++) {
     const uint32_t idx = (uint32_t)(scroll + r);
     const float y = table_y + row_h + row_h * (float)r;
-    vita2d_draw_rectangle(table_x, y, table_w, row_h - 1.0f, RGBA8(19, 33, 36, 255));
+    const int selected = ((int)idx == selected_host_index);
+    vita2d_draw_rectangle(table_x, y, table_w, row_h - 1.0f,
+                          selected ? RGBA8(40, 58, 56, 255) : RGBA8(19, 33, 36, 255));
 
     if (idx < host_count) {
       const LanHostResult *host = &hosts[idx];
@@ -456,13 +459,6 @@ static void draw_host_detail_screen(const LanScannerMetrics *scanner, int select
   draw_textf(font, 50.0f, 302.0f, h->is_gateway ? C_ACCENT : C_TEXT, 0.9f, "Role: %s",
              h->is_gateway ? "Gateway" : "Host");
   draw_textf(font, 50.0f, 332.0f, C_GRID, 0.84f, "Last error: %d (0x%08X)", h->last_error, (unsigned int)h->last_error);
-}
-
-static void draw_placeholder_screen(vita2d_pgf *font, const char *title, const char *line1, const char *line2) {
-  vita2d_draw_rectangle(32.0f, 80.0f, 896.0f, 420.0f, C_PANEL);
-  draw_textf(font, 50.0f, 112.0f, C_TEXT, 1.0f, "%s", title);
-  draw_textf(font, 50.0f, 160.0f, C_TEXT, 0.9f, "%s", line1);
-  draw_textf(font, 50.0f, 190.0f, C_GRID, 0.84f, "%s", line2);
 }
 
 static void draw_settings_screen(vita2d_pgf *font, int settings_index, ScanProfile scan_profile, int audio_enabled) {
@@ -586,7 +582,7 @@ void render_frame(const NetMonitor *monitor,
   if (screen == APP_SCREEN_STATS) {
     draw_stats_screen(monitor, latency, font, now_us);
   } else if (screen == APP_SCREEN_SCAN) {
-    draw_scan_screen(scanner, proxy, scan_source, scan_scroll, font);
+    draw_scan_screen(scanner, proxy, scan_source, scan_scroll, selected_host_index, font);
   } else if (screen == APP_SCREEN_HOST_DETAIL) {
     draw_host_detail_screen(scanner, selected_host_index, font);
   } else if (screen == APP_SCREEN_ALERTS) {
