@@ -333,12 +333,15 @@ int main(void) {
         settings_index++;
       }
       if (settings_index < 0) settings_index = 0;
-      if (settings_index > 3) settings_index = 3;
+      if (settings_index > 4) settings_index = 4;
 
       if (pressed & SCE_CTRL_CROSS) {
         if (settings_index == 0) {
           scan_profile = (ScanProfile)((scan_profile + 1) % 3);
         } else if (settings_index == 1) {
+          ui_audio.enabled = !ui_audio.enabled;
+          alerts_push(&alerts, now, ALERT_INFO, "Audio feedback: %s", ui_audio.enabled ? "ON" : "OFF");
+        } else if (settings_index == 2) {
           apply_scan_profile(&scanner_cfg, scan_profile);
           if (scanner.running) {
             lan_scanner_request_rescan(&scanner);
@@ -346,7 +349,7 @@ int main(void) {
           alerts_push(&alerts, now, ALERT_INFO, "Applied scan profile: %s",
                       (scan_profile == SCAN_PROFILE_QUICK) ? "Quick" :
                       (scan_profile == SCAN_PROFILE_DEEP) ? "Deep" : "Normal");
-        } else if (settings_index == 2) {
+        } else if (settings_index == 3) {
           char out_path[128];
           const int rc = export_json_write_snapshot(&scanner_metrics, now, out_path, sizeof(out_path));
           if (rc == 0) {
@@ -357,7 +360,7 @@ int main(void) {
             alerts_push(&alerts, now, ALERT_ERROR, "Export failed: %d", rc);
             ui_audio_event(&ui_audio, UI_AUDIO_EXPORT_FAIL);
           }
-        } else if (settings_index == 3) {
+        } else if (settings_index == 4) {
           screen = APP_SCREEN_EXPORTS;
         }
       }
@@ -406,7 +409,7 @@ int main(void) {
 
     render_frame(&monitor, &latency_metrics, &scanner_metrics, &proxy_metrics,
                  &alerts, scan_source, scan_scroll, selected_host_index, alerts_scroll, settings_index, scan_profile,
-                 &export_viewer, exports_scroll, exports_selected, screen, font, now);
+                 ui_audio.enabled, &export_viewer, exports_scroll, exports_selected, screen, font, now);
   }
 
   proxy_client_stop(&proxy);
