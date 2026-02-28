@@ -32,6 +32,15 @@ static void draw_textf(vita2d_pgf *font, float x, float y, unsigned int color, f
   vita2d_pgf_draw_text(font, x, y, color, scale, buffer);
 }
 
+static void draw_text_centered(vita2d_pgf *font, float y, unsigned int color, float scale, const char *text) {
+  const int width = vita2d_pgf_text_width(font, scale, text);
+  float x = ((float)SCREEN_W - (float)width) * 0.5f;
+  if (x < 8.0f) {
+    x = 8.0f;
+  }
+  vita2d_pgf_draw_text(font, x, y, color, scale, text);
+}
+
 static void draw_circle_outline(float cx, float cy, float radius, int segments, unsigned int color) {
   const float step = (2.0f * PI_F) / (float)segments;
   for (int i = 0; i < segments; i++) {
@@ -153,13 +162,15 @@ static void draw_latency_strip(const LatencyProbeMetrics *latency, vita2d_pgf *f
 
 static void draw_nav_hint(vita2d_pgf *font, AppScreen screen) {
   if (screen == APP_SCREEN_SCAN) {
-    draw_textf(font, 345.0f, 525.0f, C_GRID, 0.8f,
-               "L/R: switch | TRIANGLE: start/stop scan | SELECT: rescan | UP/DOWN: scroll | START: quit");
+    draw_text_centered(font, 525.0f, C_GRID, 0.75f,
+                       "L/R:view  TRIANGLE:start/stop  SELECT:rescan  UP/DOWN:scroll  START:quit");
     return;
   }
 
-  const char *name = (screen == APP_SCREEN_RADAR) ? "RADAR" : "STATS";
-  draw_textf(font, 688.0f, 525.0f, C_GRID, 0.8f, "L/R: switch view | START: quit | view: %s", name);
+  const char *text = (screen == APP_SCREEN_RADAR)
+                       ? "L/R:switch view  START:quit  view:RADAR"
+                       : "L/R:switch view  START:quit  view:STATS";
+  draw_text_centered(font, 525.0f, C_GRID, 0.8f, text);
 }
 
 static void draw_stats_screen(const NetMonitor *monitor,
