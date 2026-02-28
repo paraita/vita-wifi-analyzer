@@ -22,15 +22,15 @@ static const unsigned int C_ACCENT = RGBA8(255, 199, 106, 255);
 static const unsigned int C_WARN = RGBA8(255, 115, 101, 255);
 static const unsigned int C_TEXT = RGBA8(210, 244, 233, 255);
 
-static const char *screen_name(AppScreen screen) {
+static const char *screen_tab_name(AppScreen screen) {
   switch (screen) {
     case APP_SCREEN_RADAR: return "RADAR";
     case APP_SCREEN_STATS: return "STATS";
     case APP_SCREEN_SCAN: return "SCAN";
     case APP_SCREEN_HOST_DETAIL: return "DETAIL";
     case APP_SCREEN_ALERTS: return "ALERTS";
-    case APP_SCREEN_SETTINGS: return "SETTINGS";
-    case APP_SCREEN_EXPORTS: return "EXPORTS";
+    case APP_SCREEN_SETTINGS: return "SET";
+    case APP_SCREEN_EXPORTS: return "EXPORT";
     default: return "UNKNOWN";
   }
 }
@@ -155,8 +155,8 @@ static void draw_text_block(const NetMonitor *monitor, vita2d_pgf *font) {
   const unsigned int quality = (monitor->rssi_ema > -65.0f) ? C_PRIMARY :
                                (monitor->rssi_ema > -75.0f) ? C_ACCENT : C_WARN;
 
-  draw_textf(font, 32.0f, 45.0f, C_TEXT, 1.0f, "VITA WIFI SCOPE");
-  draw_textf(font, 32.0f, 72.0f, C_GRID, 0.8f, "Userland mode | %d Hz sample | 60 fps render", NETMON_SAMPLE_HZ);
+  draw_textf(font, 32.0f, 92.0f, C_TEXT, 1.0f, "VITA WIFI SCOPE");
+  draw_textf(font, 32.0f, 116.0f, C_GRID, 0.8f, "Userland mode | %d Hz sample | 60 fps render", NETMON_SAMPLE_HZ);
 
   draw_textf(font, 32.0f, 454.0f, C_TEXT, 0.95f, "SSID: %s", monitor->ssid);
   draw_textf(font, 32.0f, 478.0f, C_TEXT, 0.95f, "Channel: %d", monitor->channel);
@@ -172,13 +172,13 @@ static void draw_latency_strip(const LatencyProbeMetrics *latency, vita2d_pgf *f
   const char *proto = (latency->protocol == LATENCY_PROTOCOL_UDP) ? "UDP" : "TCP";
   const unsigned int color = (latency->loss_percent < 20.0f) ? C_PRIMARY : C_WARN;
 
-  vita2d_draw_rectangle(465.0f, 74.0f, 450.0f, 42.0f, C_PANEL);
-  draw_textf(font, 476.0f, 100.0f, C_TEXT, 0.8f, "%s %s:%d", proto, latency->target_ip, latency->target_port);
+  vita2d_draw_rectangle(465.0f, 82.0f, 450.0f, 38.0f, C_PANEL);
+  draw_textf(font, 476.0f, 106.0f, C_TEXT, 0.76f, "%s %s:%d", proto, latency->target_ip, latency->target_port);
 
   if (latency->probes_ok > 0) {
-    draw_textf(font, 700.0f, 100.0f, color, 0.8f, "RTT %dms | Loss %.1f%%", latency->last_rtt_ms, latency->loss_percent);
+    draw_textf(font, 700.0f, 106.0f, color, 0.76f, "RTT %dms | Loss %.1f%%", latency->last_rtt_ms, latency->loss_percent);
   } else {
-    draw_textf(font, 700.0f, 100.0f, C_WARN, 0.8f, "RTT N/A | Loss %.1f%%", latency->loss_percent);
+    draw_textf(font, 700.0f, 106.0f, C_WARN, 0.76f, "RTT N/A | Loss %.1f%%", latency->loss_percent);
   }
 }
 
@@ -206,13 +206,28 @@ static void draw_nav_hint(vita2d_pgf *font, AppScreen screen) {
 }
 
 static void draw_top_nav(vita2d_pgf *font, AppScreen screen) {
-  vita2d_draw_rectangle(20.0f, 10.0f, 920.0f, 46.0f, RGBA8(14, 24, 27, 255));
+  const float nav_x = 20.0f;
+  const float nav_y = 10.0f;
+  const float nav_w = 920.0f;
+  const float nav_h = 46.0f;
+  const float index_w = 82.0f;
+  const float tabs_w = nav_w - index_w;
+  const float slot_w = tabs_w / (float)APP_SCREEN_COUNT;
+
+  vita2d_draw_rectangle(nav_x, nav_y, nav_w, nav_h, RGBA8(14, 24, 27, 255));
   for (int i = 0; i < APP_SCREEN_COUNT; i++) {
-    const float x = 34.0f + (float)i * 130.0f;
+    const char *name = screen_tab_name((AppScreen)i);
+    const float slot_x = nav_x + (float)i * slot_w;
+    const int text_w = vita2d_pgf_text_width(font, 0.68f, name);
+    const float x = slot_x + (slot_w - (float)text_w) * 0.5f;
     const unsigned int color = (i == (int)screen) ? C_ACCENT : C_GRID;
-    draw_textf(font, x, 40.0f, color, 0.8f, "%s", screen_name((AppScreen)i));
+    draw_textf(font, x, 39.0f, color, 0.68f, "%s", name);
+    if (i > 0) {
+      const float sep_x = slot_x;
+      vita2d_draw_line(sep_x, nav_y + 8.0f, sep_x, nav_y + nav_h - 8.0f, RGBA8(24, 40, 44, 255));
+    }
   }
-  draw_textf(font, 790.0f, 40.0f, C_TEXT, 0.8f, "%d/%d", (int)screen + 1, APP_SCREEN_COUNT);
+  draw_textf(font, nav_x + tabs_w + 12.0f, 39.0f, C_TEXT, 0.74f, "%d/%d", (int)screen + 1, APP_SCREEN_COUNT);
 }
 
 static void draw_stats_screen(const NetMonitor *monitor,

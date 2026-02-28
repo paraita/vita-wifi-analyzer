@@ -263,15 +263,20 @@ int main(void) {
 
       const uint32_t host_count = (scan_source == SCAN_SOURCE_PROXY) ? proxy_metrics.host_count
                                                                       : scanner_metrics.host_count;
-      const int max_scroll = (host_count > 10U) ? (int)(host_count - 10U) : 0;
+      const int rows_visible = 8;
+      const int max_scroll = (host_count > (uint32_t)rows_visible)
+                               ? (int)(host_count - (uint32_t)rows_visible)
+                               : 0;
 
       if (pressed & SCE_CTRL_UP) {
-        scan_scroll--;
-        selected_host_index = scan_scroll;
+        if (host_count > 0 && selected_host_index > 0) {
+          selected_host_index--;
+        }
       }
       if (pressed & SCE_CTRL_DOWN) {
-        scan_scroll++;
-        selected_host_index = scan_scroll;
+        if (host_count > 0 && selected_host_index < (int)host_count - 1) {
+          selected_host_index++;
+        }
       }
       if (pressed & SCE_CTRL_SELECT) {
         if (scanner.running) {
@@ -297,11 +302,27 @@ int main(void) {
       } else if (scan_scroll > max_scroll) {
         scan_scroll = max_scroll;
       }
-      if (selected_host_index < scan_scroll) {
-        selected_host_index = scan_scroll;
+
+      if (host_count == 0) {
+        selected_host_index = 0;
+      } else {
+        if (selected_host_index < 0) {
+          selected_host_index = 0;
+        } else if (selected_host_index > (int)host_count - 1) {
+          selected_host_index = (int)host_count - 1;
+        }
       }
-      if (selected_host_index > scan_scroll + 7) {
-        selected_host_index = scan_scroll + 7;
+
+      if (selected_host_index < scan_scroll) {
+        scan_scroll = selected_host_index;
+      }
+      if (selected_host_index > scan_scroll + (rows_visible - 1)) {
+        scan_scroll = selected_host_index - (rows_visible - 1);
+      }
+      if (scan_scroll < 0) {
+        scan_scroll = 0;
+      } else if (scan_scroll > max_scroll) {
+        scan_scroll = max_scroll;
       }
       if (pressed & SCE_CTRL_CROSS) {
         if (scanner_metrics.host_count > 0) {
