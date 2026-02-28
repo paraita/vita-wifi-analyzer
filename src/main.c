@@ -6,6 +6,7 @@
 #include "alerts.h"
 #include "export_json.h"
 #include "export_viewer.h"
+#include "ui_audio.h"
 
 #include <psp2/ctrl.h>
 #include <psp2/kernel/processmgr.h>
@@ -129,6 +130,8 @@ int main(void) {
   alerts_init(&alerts);
   ExportViewer export_viewer;
   export_viewer_init(&export_viewer);
+  UiAudio ui_audio;
+  ui_audio_init(&ui_audio);
 
   const uint64_t poll_interval_us = 1000000ULL / NETMON_SAMPLE_HZ;
   uint64_t next_poll = 0;
@@ -198,9 +201,13 @@ int main(void) {
       exports_scroll = 0;
       exports_selected = 0;
     }
+    if (screen != prev_screen) {
+      ui_audio_event(&ui_audio, UI_AUDIO_NAV);
+    }
     prev_screen = screen;
 
     if (scanner_metrics.scan_round != prev_scan_round) {
+      int joined_count = 0;
       for (uint32_t i = 0; i < scanner_metrics.host_count; i++) {
         const char *ip = scanner_metrics.hosts[i].ip;
         int existed = 0;
@@ -212,6 +219,7 @@ int main(void) {
         }
         if (!existed) {
           alerts_push(&alerts, now, ALERT_INFO, "Host joined: %s", ip);
+          joined_count++;
         }
       }
       for (uint32_t j = 0; j < prev_host_count; j++) {
@@ -232,11 +240,15 @@ int main(void) {
         snprintf(prev_hosts[i], sizeof(prev_hosts[i]), "%s", scanner_metrics.hosts[i].ip);
       }
       prev_scan_round = scanner_metrics.scan_round;
+      if (joined_count > 0) {
+        ui_audio_event(&ui_audio, UI_AUDIO_HOST_NEW);
+      }
     }
 
     if (scanner_metrics.last_error != 0 && scanner_metrics.last_error != -60 && scanner_metrics.last_error != prev_scan_error) {
       alerts_push(&alerts, now, ALERT_ERROR, "Scanner error: %d (0x%08X)",
                   scanner_metrics.last_error, (unsigned int)scanner_metrics.last_error);
+      ui_audio_event(&ui_audio, UI_AUDIO_ERROR);
     }
     prev_scan_error = scanner_metrics.last_error;
 
@@ -276,6 +288,7 @@ int main(void) {
         } else {
           local_scan_armed = true;
         }
+        ui_audio_event(&ui_audio, UI_AUDIO_SCAN_TOGGLE);
         scan_scroll = 0;
       }
 
@@ -339,8 +352,10 @@ int main(void) {
           if (rc == 0) {
             (void)export_json_rebuild_index();
             alerts_push(&alerts, now, ALERT_INFO, "Export saved: %s", out_path);
+            ui_audio_event(&ui_audio, UI_AUDIO_EXPORT_OK);
           } else {
             alerts_push(&alerts, now, ALERT_ERROR, "Export failed: %d", rc);
+            ui_audio_event(&ui_audio, UI_AUDIO_EXPORT_FAIL);
           }
         } else if (settings_index == 3) {
           screen = APP_SCREEN_EXPORTS;
@@ -367,8 +382,10 @@ int main(void) {
           (void)export_json_rebuild_index();
           (void)export_viewer_reload(&export_viewer);
           alerts_push(&alerts, now, ALERT_INFO, "Export saved: %s", out_path);
+          ui_audio_event(&ui_audio, UI_AUDIO_EXPORT_OK);
         } else {
           alerts_push(&alerts, now, ALERT_ERROR, "Export failed: %d", rc);
+          ui_audio_event(&ui_audio, UI_AUDIO_EXPORT_FAIL);
         }
       }
 
@@ -393,6 +410,7 @@ int main(void) {
   }
 
   proxy_client_stop(&proxy);
+  ui_audio_term(&ui_audio);
   lan_scanner_stop(&scanner);
   latency_probe_stop(&probe);
   vita2d_free_pgf(font);

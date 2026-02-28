@@ -14,7 +14,7 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 
 set(VITA_APP_NAME "Vita Wi-Fi Scope")
 set(VITA_TITLEID  "VWSC00001")
-set(VITA_VERSION  "01.32")
+set(VITA_VERSION  "01.33")
 
 add_executable(${PROJECT_NAME}
   src/main.c
@@ -24,6 +24,7 @@ add_executable(${PROJECT_NAME}
   src/alerts.c
   src/export_json.c
   src/export_viewer.c
+  src/ui_audio.c
   src/proxy_client.c
   src/net_monitor.c
   src/render.c
@@ -51,6 +52,7 @@ target_link_libraries(${PROJECT_NAME}
   SceNet_stub
   SceNetCtl_stub
   SceIofilemgr_stub
+  SceAudio_stub
   m
 )
 
