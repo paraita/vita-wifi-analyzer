@@ -343,6 +343,7 @@ static void upsert_host(LanScanner *scanner,
                         const char *ip,
                         uint32_t source_flags,
                         const char *hostname,
+                        const char *service_hint,
                         const uint16_t *ports,
                         uint8_t port_count,
                         int last_error) {
@@ -369,8 +370,18 @@ static void upsert_host(LanScanner *scanner,
   if (hostname != NULL && hostname[0] != '\0' && host->hostname[0] == '\0') {
     snprintf(host->hostname, sizeof(host->hostname), "%s", hostname);
   }
+  if (service_hint != NULL && service_hint[0] != '\0' && host->service_hint[0] == '\0') {
+    snprintf(host->service_hint, sizeof(host->service_hint), "%s", service_hint);
+  }
   if (ports != NULL && port_count > 0U) {
     merge_ports(host, ports, port_count);
+    for (uint8_t i = 0; i < port_count; i++) {
+      const uint16_t p = ports[i];
+      if ((p == 80 || p == 443 || p == 8080) && host->service_hint[0] == '\0') {
+        snprintf(host->service_hint, sizeof(host->service_hint), "web-service");
+        break;
+      }
+    }
   }
   if (last_error != 0) {
     host->last_error = last_error;
@@ -384,7 +395,7 @@ static void finalize_host(LanScanner *scanner) {
   scanner->hosts_scanned++;
 
   if (scanner->current_host_alive) {
-    upsert_host(scanner, scanner->current_ip, scanner->current_source_flags, NULL,
+    upsert_host(scanner, scanner->current_ip, scanner->current_source_flags, NULL, NULL,
                 scanner->current_open_ports, scanner->current_open_port_count, scanner->last_error);
   }
 
@@ -599,7 +610,7 @@ void lan_scanner_tick(LanScanner *scanner, uint64_t now_us) {
     uint32_t event_count = 0;
     discovery_tick(&scanner->discovery, now_us, scanner->subnet_prefix, events, 16, &event_count);
     for (uint32_t i = 0; i < event_count; i++) {
-      upsert_host(scanner, events[i].ip, events[i].source_flags, events[i].hostname, NULL, 0, 0);
+      upsert_host(scanner, events[i].ip, events[i].source_flags, events[i].hostname, events[i].service_hint, NULL, 0, 0);
     }
   }
 

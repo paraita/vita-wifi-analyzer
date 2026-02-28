@@ -49,7 +49,8 @@ static int append_event(DiscoveryEvent *events,
                         uint32_t *event_count,
                         const char *ip,
                         uint32_t source_flag,
-                        const char *hostname) {
+                        const char *hostname,
+                        const char *service_hint) {
   if (*event_count >= max_events) {
     return -1;
   }
@@ -59,6 +60,9 @@ static int append_event(DiscoveryEvent *events,
   ev->source_flags = source_flag;
   if (hostname != NULL && hostname[0] != '\0') {
     snprintf(ev->hostname, sizeof(ev->hostname), "%s", hostname);
+  }
+  if (service_hint != NULL && service_hint[0] != '\0') {
+    snprintf(ev->service_hint, sizeof(ev->service_hint), "%s", service_hint);
   }
   (*event_count)++;
   return 0;
@@ -91,6 +95,8 @@ static void recv_loop(int sock,
 
     char hostname[64];
     hostname[0] = '\0';
+    char service_hint[64];
+    service_hint[0] = '\0';
     if (source_flag == DISCOVERY_SRC_SSDP) {
       const char *server = strstr(buf, "\nSERVER:");
       if (server == NULL) {
@@ -108,9 +114,25 @@ static void recv_loop(int sock,
           hostname[n] = '\0';
         }
       }
+      const char *st = strstr(buf, "\nST:");
+      if (st == NULL) {
+        st = strstr(buf, "\nSt:");
+      }
+      if (st != NULL) {
+        st += 4;
+        while (*st == ' ') st++;
+        const char *end = strstr(st, "\r\n");
+        if (end == NULL) end = strchr(st, '\n');
+        if (end != NULL) {
+          size_t n = (size_t)(end - st);
+          if (n >= sizeof(service_hint)) n = sizeof(service_hint) - 1;
+          memcpy(service_hint, st, n);
+          service_hint[n] = '\0';
+        }
+      }
     }
 
-    if (append_event(events, max_events, event_count, ip, source_flag, hostname) == 0) {
+    if (append_event(events, max_events, event_count, ip, source_flag, hostname, service_hint) == 0) {
       (*hits_out)++;
     }
   }

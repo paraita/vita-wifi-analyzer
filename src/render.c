@@ -441,10 +441,11 @@ static void draw_host_detail_screen(const LanScannerMetrics *scanner, int select
   draw_textf(font, 50.0f, 152.0f, C_TEXT, 0.9f, "IP: %s", h->ip);
   draw_textf(font, 50.0f, 182.0f, C_TEXT, 0.9f, "Name: %s", h->hostname[0] ? h->hostname : "-");
   draw_textf(font, 50.0f, 212.0f, C_TEXT, 0.9f, "Sources: %s", sources);
-  draw_textf(font, 50.0f, 242.0f, C_TEXT, 0.9f, "Open ports: %s", ports);
-  draw_textf(font, 50.0f, 272.0f, h->is_gateway ? C_ACCENT : C_TEXT, 0.9f, "Role: %s",
+  draw_textf(font, 50.0f, 242.0f, C_TEXT, 0.9f, "Service hint: %s", h->service_hint[0] ? h->service_hint : "-");
+  draw_textf(font, 50.0f, 272.0f, C_TEXT, 0.9f, "Open ports: %s", ports);
+  draw_textf(font, 50.0f, 302.0f, h->is_gateway ? C_ACCENT : C_TEXT, 0.9f, "Role: %s",
              h->is_gateway ? "Gateway" : "Host");
-  draw_textf(font, 50.0f, 302.0f, C_GRID, 0.84f, "Last error: %d (0x%08X)", h->last_error, (unsigned int)h->last_error);
+  draw_textf(font, 50.0f, 332.0f, C_GRID, 0.84f, "Last error: %d (0x%08X)", h->last_error, (unsigned int)h->last_error);
 }
 
 static void draw_placeholder_screen(vita2d_pgf *font, const char *title, const char *line1, const char *line2) {

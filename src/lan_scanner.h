@@ -17,6 +17,7 @@ typedef struct LanScannerConfig {
 typedef struct LanHostResult {
   char ip[16];
   char hostname[64];
+  char service_hint[64];
   uint8_t alive;
   uint8_t is_gateway;
   uint8_t open_port_count;

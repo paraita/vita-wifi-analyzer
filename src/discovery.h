@@ -15,6 +15,7 @@ typedef struct DiscoveryEvent {
   char ip[16];
   uint32_t source_flags;
   char hostname[64];
+  char service_hint[64];
 } DiscoveryEvent;
 
 typedef struct DiscoveryEngine {
