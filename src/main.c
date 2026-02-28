@@ -103,6 +103,7 @@ int main(void) {
   AppScreen screen = APP_SCREEN_RADAR;
   ScanDataSource scan_source = SCAN_SOURCE_LOCAL;
   int scan_scroll = 0;
+  int selected_host_index = 0;
   bool local_scan_armed = true;
   unsigned int prev_buttons = 0;
   bool running = true;
@@ -124,10 +125,10 @@ int main(void) {
     prev_buttons = pad.buttons;
 
     if (pressed & SCE_CTRL_LTRIGGER) {
-      screen = (AppScreen)((screen + 2) % 3);
+      screen = (AppScreen)((screen + APP_SCREEN_COUNT - 1) % APP_SCREEN_COUNT);
     }
     if (pressed & SCE_CTRL_RTRIGGER) {
-      screen = (AppScreen)((screen + 1) % 3);
+      screen = (AppScreen)((screen + 1) % APP_SCREEN_COUNT);
     }
     if (pressed & SCE_CTRL_SQUARE) {
       screen = APP_SCREEN_SCAN;
@@ -160,9 +161,11 @@ int main(void) {
 
       if (pressed & SCE_CTRL_UP) {
         scan_scroll--;
+        selected_host_index = scan_scroll;
       }
       if (pressed & SCE_CTRL_DOWN) {
         scan_scroll++;
+        selected_host_index = scan_scroll;
       }
       if (pressed & SCE_CTRL_SELECT) {
         if (scanner.running) {
@@ -187,6 +190,24 @@ int main(void) {
       } else if (scan_scroll > max_scroll) {
         scan_scroll = max_scroll;
       }
+      if (selected_host_index < scan_scroll) {
+        selected_host_index = scan_scroll;
+      }
+      if (selected_host_index > scan_scroll + 7) {
+        selected_host_index = scan_scroll + 7;
+      }
+      if (pressed & SCE_CTRL_CROSS) {
+        if (scanner_metrics.host_count > 0) {
+          if ((uint32_t)selected_host_index >= scanner_metrics.host_count) {
+            selected_host_index = (int)scanner_metrics.host_count - 1;
+          }
+          screen = APP_SCREEN_HOST_DETAIL;
+        }
+      }
+    } else if (screen == APP_SCREEN_HOST_DETAIL) {
+      if (pressed & SCE_CTRL_CIRCLE) {
+        screen = APP_SCREEN_SCAN;
+      }
     } else {
       if (scanner.running) {
         lan_scanner_stop(&scanner);
@@ -194,7 +215,7 @@ int main(void) {
     }
 
     render_frame(&monitor, &latency_metrics, &scanner_metrics, &proxy_metrics,
-                 scan_source, scan_scroll, screen, font, now);
+                 scan_source, scan_scroll, selected_host_index, screen, font, now);
   }
 
   proxy_client_stop(&proxy);

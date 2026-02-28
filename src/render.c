@@ -22,6 +22,19 @@ static const unsigned int C_ACCENT = RGBA8(255, 199, 106, 255);
 static const unsigned int C_WARN = RGBA8(255, 115, 101, 255);
 static const unsigned int C_TEXT = RGBA8(210, 244, 233, 255);
 
+static const char *screen_name(AppScreen screen) {
+  switch (screen) {
+    case APP_SCREEN_RADAR: return "RADAR";
+    case APP_SCREEN_STATS: return "STATS";
+    case APP_SCREEN_SCAN: return "SCAN";
+    case APP_SCREEN_HOST_DETAIL: return "DETAIL";
+    case APP_SCREEN_ALERTS: return "ALERTS";
+    case APP_SCREEN_SETTINGS: return "SETTINGS";
+    case APP_SCREEN_EXPORTS: return "EXPORTS";
+    default: return "UNKNOWN";
+  }
+}
+
 static void draw_textf(vita2d_pgf *font, float x, float y, unsigned int color, float scale,
                        const char *fmt, ...) {
   char buffer[256];
@@ -163,14 +176,24 @@ static void draw_latency_strip(const LatencyProbeMetrics *latency, vita2d_pgf *f
 static void draw_nav_hint(vita2d_pgf *font, AppScreen screen) {
   if (screen == APP_SCREEN_SCAN) {
     draw_text_centered(font, 525.0f, C_GRID, 0.75f,
-                       "L/R:view  TRIANGLE:start/stop  SELECT:rescan  UP/DOWN:scroll  START:quit");
+                       "L/R:view  CROSS:detail  TRIANGLE:start/stop  SELECT:rescan  UP/DOWN:scroll  START:quit");
     return;
   }
 
-  const char *text = (screen == APP_SCREEN_RADAR)
-                       ? "L/R:switch view  START:quit  view:RADAR"
-                       : "L/R:switch view  START:quit  view:STATS";
+  const char *text = (screen == APP_SCREEN_HOST_DETAIL)
+                       ? "L/R:view  CIRCLE:back to scan  START:quit"
+                       : "L/R:switch view  START:quit";
   draw_text_centered(font, 525.0f, C_GRID, 0.8f, text);
+}
+
+static void draw_top_nav(vita2d_pgf *font, AppScreen screen) {
+  vita2d_draw_rectangle(20.0f, 10.0f, 920.0f, 46.0f, RGBA8(14, 24, 27, 255));
+  for (int i = 0; i < APP_SCREEN_COUNT; i++) {
+    const float x = 34.0f + (float)i * 130.0f;
+    const unsigned int color = (i == (int)screen) ? C_ACCENT : C_GRID;
+    draw_textf(font, x, 40.0f, color, 0.8f, "%s", screen_name((AppScreen)i));
+  }
+  draw_textf(font, 790.0f, 40.0f, C_TEXT, 0.8f, "%d/%d", (int)screen + 1, APP_SCREEN_COUNT);
 }
 
 static void draw_stats_screen(const NetMonitor *monitor,
@@ -390,12 +413,45 @@ static void draw_scan_screen(const LanScannerMetrics *scanner,
   }
 }
 
+static void draw_host_detail_screen(const LanScannerMetrics *scanner, int selected_host_index, vita2d_pgf *font) {
+  vita2d_draw_rectangle(32.0f, 80.0f, 896.0f, 420.0f, C_PANEL);
+  draw_textf(font, 50.0f, 112.0f, C_TEXT, 1.0f, "HOST DETAIL");
+  if (scanner->host_count == 0) {
+    draw_textf(font, 50.0f, 152.0f, C_WARN, 0.9f, "No host available. Use SCAN first.");
+    return;
+  }
+
+  if (selected_host_index < 0) selected_host_index = 0;
+  if ((uint32_t)selected_host_index >= scanner->host_count) selected_host_index = (int)scanner->host_count - 1;
+
+  const LanHostResult *h = &scanner->hosts[selected_host_index];
+  char ports[96];
+  char sources[96];
+  format_ports(h, ports, sizeof(ports));
+  format_sources(h->source_flags, sources, sizeof(sources));
+  draw_textf(font, 50.0f, 152.0f, C_TEXT, 0.9f, "IP: %s", h->ip);
+  draw_textf(font, 50.0f, 182.0f, C_TEXT, 0.9f, "Name: %s", h->hostname[0] ? h->hostname : "-");
+  draw_textf(font, 50.0f, 212.0f, C_TEXT, 0.9f, "Sources: %s", sources);
+  draw_textf(font, 50.0f, 242.0f, C_TEXT, 0.9f, "Open ports: %s", ports);
+  draw_textf(font, 50.0f, 272.0f, h->is_gateway ? C_ACCENT : C_TEXT, 0.9f, "Role: %s",
+             h->is_gateway ? "Gateway" : "Host");
+  draw_textf(font, 50.0f, 302.0f, C_GRID, 0.84f, "Last error: %d (0x%08X)", h->last_error, (unsigned int)h->last_error);
+}
+
+static void draw_placeholder_screen(vita2d_pgf *font, const char *title, const char *line1, const char *line2) {
+  vita2d_draw_rectangle(32.0f, 80.0f, 896.0f, 420.0f, C_PANEL);
+  draw_textf(font, 50.0f, 112.0f, C_TEXT, 1.0f, "%s", title);
+  draw_textf(font, 50.0f, 160.0f, C_TEXT, 0.9f, "%s", line1);
+  draw_textf(font, 50.0f, 190.0f, C_GRID, 0.84f, "%s", line2);
+}
+
 void render_frame(const NetMonitor *monitor,
                   const LatencyProbeMetrics *latency,
                   const LanScannerMetrics *scanner,
                   const ProxyClientMetrics *proxy,
                   ScanDataSource scan_source,
                   int scan_scroll,
+                  int selected_host_index,
                   AppScreen screen,
                   vita2d_pgf *font,
                   uint64_t now_us) {
@@ -403,10 +459,25 @@ void render_frame(const NetMonitor *monitor,
   vita2d_clear_screen();
 
   vita2d_draw_rectangle(0.0f, 0.0f, (float)SCREEN_W, (float)SCREEN_H, C_BG);
+  draw_top_nav(font, screen);
   if (screen == APP_SCREEN_STATS) {
     draw_stats_screen(monitor, latency, font, now_us);
   } else if (screen == APP_SCREEN_SCAN) {
     draw_scan_screen(scanner, proxy, scan_source, scan_scroll, font);
+  } else if (screen == APP_SCREEN_HOST_DETAIL) {
+    draw_host_detail_screen(scanner, selected_host_index, font);
+  } else if (screen == APP_SCREEN_ALERTS) {
+    draw_placeholder_screen(font, "ALERTS",
+                            "Realtime host join/leave and critical errors will appear here.",
+                            "Planned: severity filters and acknowledgement.");
+  } else if (screen == APP_SCREEN_SETTINGS) {
+    draw_placeholder_screen(font, "SETTINGS",
+                            "Profiles, audio feedback and export actions will be configured here.",
+                            "Planned: persistent config in ux0:data/vita_wifi_scope.");
+  } else if (screen == APP_SCREEN_EXPORTS) {
+    draw_placeholder_screen(font, "EXPORTS",
+                            "Interpreted export browser (list + detail) will be available here.",
+                            "Planned: navigate snapshots without viewing raw JSON.");
   } else {
     draw_radar(monitor, now_us);
     draw_oscilloscope(monitor);
