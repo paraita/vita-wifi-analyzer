@@ -6,6 +6,7 @@
 #include "lan_scanner.h"
 #include "proxy_client.h"
 #include "alerts.h"
+#include "export_viewer.h"
 #include <vita2d.h>
 
 typedef enum AppScreen {
@@ -41,6 +42,9 @@ void render_frame(const NetMonitor *monitor,
                   int alerts_scroll,
                   int settings_index,
                   ScanProfile scan_profile,
+                  const ExportViewer *export_viewer,
+                  int exports_scroll,
+                  int exports_selected,
                   AppScreen screen,
                   vita2d_pgf *font,
                   uint64_t now_us);

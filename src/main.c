@@ -4,6 +4,8 @@
 #include "lan_scanner.h"
 #include "proxy_client.h"
 #include "alerts.h"
+#include "export_json.h"
+#include "export_viewer.h"
 
 #include <psp2/ctrl.h>
 #include <psp2/kernel/processmgr.h>
@@ -125,6 +127,8 @@ int main(void) {
   proxy_client_init(&proxy);
   AlertManager alerts;
   alerts_init(&alerts);
+  ExportViewer export_viewer;
+  export_viewer_init(&export_viewer);
 
   const uint64_t poll_interval_us = 1000000ULL / NETMON_SAMPLE_HZ;
   uint64_t next_poll = 0;
@@ -135,6 +139,9 @@ int main(void) {
   int alerts_scroll = 0;
   int settings_index = 0;
   ScanProfile scan_profile = SCAN_PROFILE_NORMAL;
+  int exports_scroll = 0;
+  int exports_selected = 0;
+  AppScreen prev_screen = screen;
   uint32_t prev_scan_round = 0;
   int prev_scan_error = 0;
   uint32_t prev_host_count = 0;
@@ -166,7 +173,11 @@ int main(void) {
       screen = (AppScreen)((screen + 1) % APP_SCREEN_COUNT);
     }
     if (pressed & SCE_CTRL_SQUARE) {
-      screen = APP_SCREEN_SCAN;
+      if (screen == APP_SCREEN_SCAN) {
+        screen = APP_SCREEN_EXPORTS;
+      } else {
+        screen = APP_SCREEN_SCAN;
+      }
     }
     if (pad.buttons & SCE_CTRL_START) {
       running = false;
@@ -180,6 +191,14 @@ int main(void) {
 
     ProxyClientMetrics proxy_metrics;
     proxy_client_get_metrics(&proxy, &proxy_metrics);
+
+    if (screen != prev_screen && screen == APP_SCREEN_EXPORTS) {
+      (void)export_json_rebuild_index();
+      (void)export_viewer_reload(&export_viewer);
+      exports_scroll = 0;
+      exports_selected = 0;
+    }
+    prev_screen = screen;
 
     if (scanner_metrics.scan_round != prev_scan_round) {
       for (uint32_t i = 0; i < scanner_metrics.host_count; i++) {
@@ -301,12 +320,12 @@ int main(void) {
         settings_index++;
       }
       if (settings_index < 0) settings_index = 0;
-      if (settings_index > 1) settings_index = 1;
+      if (settings_index > 3) settings_index = 3;
 
       if (pressed & SCE_CTRL_CROSS) {
         if (settings_index == 0) {
           scan_profile = (ScanProfile)((scan_profile + 1) % 3);
-        } else {
+        } else if (settings_index == 1) {
           apply_scan_profile(&scanner_cfg, scan_profile);
           if (scanner.running) {
             lan_scanner_request_rescan(&scanner);
@@ -314,8 +333,50 @@ int main(void) {
           alerts_push(&alerts, now, ALERT_INFO, "Applied scan profile: %s",
                       (scan_profile == SCAN_PROFILE_QUICK) ? "Quick" :
                       (scan_profile == SCAN_PROFILE_DEEP) ? "Deep" : "Normal");
+        } else if (settings_index == 2) {
+          char out_path[128];
+          const int rc = export_json_write_snapshot(&scanner_metrics, now, out_path, sizeof(out_path));
+          if (rc == 0) {
+            (void)export_json_rebuild_index();
+            alerts_push(&alerts, now, ALERT_INFO, "Export saved: %s", out_path);
+          } else {
+            alerts_push(&alerts, now, ALERT_ERROR, "Export failed: %d", rc);
+          }
+        } else if (settings_index == 3) {
+          screen = APP_SCREEN_EXPORTS;
         }
       }
+    } else if (screen == APP_SCREEN_EXPORTS) {
+      const int max_scroll = (export_viewer.count > 10U) ? (int)(export_viewer.count - 10U) : 0;
+      if (pressed & SCE_CTRL_UP) {
+        exports_selected--;
+      }
+      if (pressed & SCE_CTRL_DOWN) {
+        exports_selected++;
+      }
+      if (pressed & SCE_CTRL_LEFT) {
+        exports_scroll -= 3;
+      }
+      if (pressed & SCE_CTRL_RIGHT) {
+        exports_scroll += 3;
+      }
+      if (pressed & SCE_CTRL_TRIANGLE) {
+        char out_path[128];
+        const int rc = export_json_write_snapshot(&scanner_metrics, now, out_path, sizeof(out_path));
+        if (rc == 0) {
+          (void)export_json_rebuild_index();
+          (void)export_viewer_reload(&export_viewer);
+          alerts_push(&alerts, now, ALERT_INFO, "Export saved: %s", out_path);
+        } else {
+          alerts_push(&alerts, now, ALERT_ERROR, "Export failed: %d", rc);
+        }
+      }
+
+      if (exports_selected < 0) exports_selected = 0;
+      if (exports_selected >= (int)export_viewer.count) exports_selected = (int)export_viewer.count - 1;
+      if (exports_selected < 0) exports_selected = 0;
+      if (exports_scroll < 0) exports_scroll = 0;
+      if (exports_scroll > max_scroll) exports_scroll = max_scroll;
     } else if (screen == APP_SCREEN_HOST_DETAIL) {
       if (pressed & SCE_CTRL_CIRCLE) {
         screen = APP_SCREEN_SCAN;
@@ -328,7 +389,7 @@ int main(void) {
 
     render_frame(&monitor, &latency_metrics, &scanner_metrics, &proxy_metrics,
                  &alerts, scan_source, scan_scroll, selected_host_index, alerts_scroll, settings_index, scan_profile,
-                 screen, font, now);
+                 &export_viewer, exports_scroll, exports_selected, screen, font, now);
   }
 
   proxy_client_stop(&proxy);

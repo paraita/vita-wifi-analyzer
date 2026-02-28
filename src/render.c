@@ -188,6 +188,16 @@ static void draw_nav_hint(vita2d_pgf *font, AppScreen screen) {
                        "L/R:view  CROSS:detail  TRIANGLE:start/stop  SELECT:rescan  UP/DOWN:scroll  START:quit");
     return;
   }
+  if (screen == APP_SCREEN_EXPORTS) {
+    draw_text_centered(font, 525.0f, C_GRID, 0.75f,
+                       "L/R:view  UP/DOWN:select  LEFT/RIGHT:scroll  TRIANGLE:export  START:quit");
+    return;
+  }
+  if (screen == APP_SCREEN_SETTINGS) {
+    draw_text_centered(font, 525.0f, C_GRID, 0.75f,
+                       "L/R:view  UP/DOWN:option  CROSS:apply/open  START:quit");
+    return;
+  }
 
   const char *text = (screen == APP_SCREEN_HOST_DETAIL)
                        ? "L/R:view  CIRCLE:back to scan  START:quit"
@@ -457,17 +467,67 @@ static void draw_placeholder_screen(vita2d_pgf *font, const char *title, const c
 
 static void draw_settings_screen(vita2d_pgf *font, int settings_index, ScanProfile scan_profile) {
   if (settings_index < 0) settings_index = 0;
-  if (settings_index > 1) settings_index = 1;
+  if (settings_index > 3) settings_index = 3;
   vita2d_draw_rectangle(32.0f, 80.0f, 896.0f, 420.0f, C_PANEL);
   draw_textf(font, 50.0f, 112.0f, C_TEXT, 1.0f, "SETTINGS");
   draw_textf(font, 50.0f, 136.0f, C_GRID, 0.8f, "UP/DOWN: select  CROSS: change/apply");
 
   const unsigned int c0 = (settings_index == 0) ? C_ACCENT : C_TEXT;
   const unsigned int c1 = (settings_index == 1) ? C_ACCENT : C_TEXT;
+  const unsigned int c2 = (settings_index == 2) ? C_ACCENT : C_TEXT;
+  const unsigned int c3 = (settings_index == 3) ? C_ACCENT : C_TEXT;
   draw_textf(font, 60.0f, 182.0f, c0, 0.9f, "Scan profile: %s", profile_name(scan_profile));
   draw_textf(font, 60.0f, 212.0f, c1, 0.9f, "Apply profile to scanner now");
-  draw_textf(font, 60.0f, 260.0f, C_GRID, 0.84f,
+  draw_textf(font, 60.0f, 242.0f, c2, 0.9f, "Export snapshot now");
+  draw_textf(font, 60.0f, 272.0f, c3, 0.9f, "Open exports viewer");
+  draw_textf(font, 60.0f, 320.0f, C_GRID, 0.84f,
              "Quick: fast/low coverage | Normal: balanced | Deep: slower/max coverage");
+}
+
+static void draw_exports_screen(const ExportViewer *viewer, int exports_scroll, int exports_selected, vita2d_pgf *font) {
+  vita2d_draw_rectangle(24.0f, 72.0f, 912.0f, 430.0f, C_PANEL);
+  draw_textf(font, 42.0f, 104.0f, C_TEXT, 1.0f, "EXPORTS");
+  draw_textf(font, 42.0f, 128.0f, C_GRID, 0.78f, "UP/DOWN:select  LEFT/RIGHT:scroll  CROSS:view detail");
+
+  const float left_x = 42.0f;
+  const float left_y = 146.0f;
+  const float left_w = 360.0f;
+  const float left_h = 340.0f;
+  vita2d_draw_rectangle(left_x, left_y, left_w, left_h, RGBA8(16, 27, 31, 255));
+  draw_textf(font, left_x + 10.0f, left_y + 20.0f, C_TEXT, 0.8f, "Snapshots (%u)", viewer->count);
+
+  const int rows = 10;
+  const float row_h = 30.0f;
+  for (int i = 0; i < rows; i++) {
+    const uint32_t idx = (uint32_t)(exports_scroll + i);
+    const float y = left_y + 28.0f + row_h * (float)i;
+    const int selected = ((int)idx == exports_selected);
+    vita2d_draw_rectangle(left_x + 6.0f, y, left_w - 12.0f, row_h - 2.0f,
+                          selected ? RGBA8(54, 76, 72, 255) : RGBA8(21, 36, 40, 255));
+    if (idx < viewer->count) {
+      draw_textf(font, left_x + 12.0f, y + 20.0f, selected ? C_ACCENT : C_TEXT, 0.72f, "%s", viewer->exports[idx].label);
+    }
+  }
+
+  const float right_x = 418.0f;
+  const float right_y = 146.0f;
+  const float right_w = 500.0f;
+  const float right_h = 340.0f;
+  vita2d_draw_rectangle(right_x, right_y, right_w, right_h, RGBA8(16, 27, 31, 255));
+  draw_textf(font, right_x + 10.0f, right_y + 20.0f, C_TEXT, 0.8f, "Interpreted detail");
+  if (viewer->count == 0 || exports_selected < 0 || (uint32_t)exports_selected >= viewer->count) {
+    draw_textf(font, right_x + 10.0f, right_y + 54.0f, C_GRID, 0.84f, "No export snapshot found.");
+    return;
+  }
+
+  const ExportSummary *e = &viewer->exports[exports_selected];
+  draw_textf(font, right_x + 10.0f, right_y + 54.0f, C_TEXT, 0.82f, "File: %s", e->label);
+  draw_textf(font, right_x + 10.0f, right_y + 82.0f, C_TEXT, 0.82f, "Subnet: %s", e->subnet[0] ? e->subnet : "-");
+  draw_textf(font, right_x + 10.0f, right_y + 110.0f, C_TEXT, 0.82f, "Host count: %u", e->host_count);
+  draw_textf(font, right_x + 10.0f, right_y + 138.0f, C_GRID, 0.8f, "Preview hosts:");
+  for (uint32_t i = 0; i < e->preview_count && i < EXPORT_VIEWER_HOST_PREVIEW; i++) {
+    draw_textf(font, right_x + 24.0f, right_y + 166.0f + 24.0f * (float)i, C_TEXT, 0.78f, "- %s", e->preview_hosts[i]);
+  }
 }
 
 static void draw_alerts_screen(const AlertManager *alerts, int scroll, vita2d_pgf *font, uint64_t now_us) {
@@ -509,6 +569,9 @@ void render_frame(const NetMonitor *monitor,
                   int alerts_scroll,
                   int settings_index,
                   ScanProfile scan_profile,
+                  const ExportViewer *export_viewer,
+                  int exports_scroll,
+                  int exports_selected,
                   AppScreen screen,
                   vita2d_pgf *font,
                   uint64_t now_us) {
@@ -528,9 +591,7 @@ void render_frame(const NetMonitor *monitor,
   } else if (screen == APP_SCREEN_SETTINGS) {
     draw_settings_screen(font, settings_index, scan_profile);
   } else if (screen == APP_SCREEN_EXPORTS) {
-    draw_placeholder_screen(font, "EXPORTS",
-                            "Interpreted export browser (list + detail) will be available here.",
-                            "Planned: navigate snapshots without viewing raw JSON.");
+    draw_exports_screen(export_viewer, exports_scroll, exports_selected, font);
   } else {
     draw_radar(monitor, now_us);
     draw_oscilloscope(monitor);
