@@ -21,6 +21,29 @@ enum {
   NET_MEMPOOL_SIZE = 1 * 1024 * 1024
 };
 
+static void apply_scan_profile(LanScannerConfig *cfg, ScanProfile profile) {
+  lan_scanner_default_config(cfg);
+  if (profile == SCAN_PROFILE_QUICK) {
+    cfg->interval_ms_per_host = 12;
+    cfg->connect_timeout_ms = 70;
+    cfg->ports[0] = 53;
+    cfg->ports[1] = 80;
+    cfg->ports[2] = 443;
+    cfg->ports[3] = 445;
+  } else if (profile == SCAN_PROFILE_DEEP) {
+    cfg->interval_ms_per_host = 30;
+    cfg->connect_timeout_ms = 180;
+    cfg->ports[0] = 22;
+    cfg->ports[1] = 23;
+    cfg->ports[2] = 53;
+    cfg->ports[3] = 80;
+    cfg->ports[4] = 139;
+    cfg->ports[5] = 443;
+    cfg->ports[6] = 445;
+    cfg->ports[7] = 8080;
+  }
+}
+
 static int init_network(void **mempool_out) {
   int ret = sceSysmoduleLoadModule(SCE_SYSMODULE_NET);
   if (ret < 0) {
@@ -110,6 +133,8 @@ int main(void) {
   int scan_scroll = 0;
   int selected_host_index = 0;
   int alerts_scroll = 0;
+  int settings_index = 0;
+  ScanProfile scan_profile = SCAN_PROFILE_NORMAL;
   uint32_t prev_scan_round = 0;
   int prev_scan_error = 0;
   uint32_t prev_host_count = 0;
@@ -268,6 +293,29 @@ int main(void) {
       }
       if (alerts_scroll < 0) alerts_scroll = 0;
       if (alerts_scroll > max_scroll) alerts_scroll = max_scroll;
+    } else if (screen == APP_SCREEN_SETTINGS) {
+      if (pressed & SCE_CTRL_UP) {
+        settings_index--;
+      }
+      if (pressed & SCE_CTRL_DOWN) {
+        settings_index++;
+      }
+      if (settings_index < 0) settings_index = 0;
+      if (settings_index > 1) settings_index = 1;
+
+      if (pressed & SCE_CTRL_CROSS) {
+        if (settings_index == 0) {
+          scan_profile = (ScanProfile)((scan_profile + 1) % 3);
+        } else {
+          apply_scan_profile(&scanner_cfg, scan_profile);
+          if (scanner.running) {
+            lan_scanner_request_rescan(&scanner);
+          }
+          alerts_push(&alerts, now, ALERT_INFO, "Applied scan profile: %s",
+                      (scan_profile == SCAN_PROFILE_QUICK) ? "Quick" :
+                      (scan_profile == SCAN_PROFILE_DEEP) ? "Deep" : "Normal");
+        }
+      }
     } else if (screen == APP_SCREEN_HOST_DETAIL) {
       if (pressed & SCE_CTRL_CIRCLE) {
         screen = APP_SCREEN_SCAN;
@@ -279,7 +327,7 @@ int main(void) {
     }
 
     render_frame(&monitor, &latency_metrics, &scanner_metrics, &proxy_metrics,
-                 &alerts, scan_source, scan_scroll, selected_host_index, alerts_scroll,
+                 &alerts, scan_source, scan_scroll, selected_host_index, alerts_scroll, settings_index, scan_profile,
                  screen, font, now);
   }
 

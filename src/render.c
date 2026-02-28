@@ -35,6 +35,15 @@ static const char *screen_name(AppScreen screen) {
   }
 }
 
+static const char *profile_name(ScanProfile p) {
+  switch (p) {
+    case SCAN_PROFILE_QUICK: return "QUICK";
+    case SCAN_PROFILE_NORMAL: return "NORMAL";
+    case SCAN_PROFILE_DEEP: return "DEEP";
+    default: return "UNKNOWN";
+  }
+}
+
 static void draw_textf(vita2d_pgf *font, float x, float y, unsigned int color, float scale,
                        const char *fmt, ...) {
   char buffer[256];
@@ -445,6 +454,21 @@ static void draw_placeholder_screen(vita2d_pgf *font, const char *title, const c
   draw_textf(font, 50.0f, 190.0f, C_GRID, 0.84f, "%s", line2);
 }
 
+static void draw_settings_screen(vita2d_pgf *font, int settings_index, ScanProfile scan_profile) {
+  if (settings_index < 0) settings_index = 0;
+  if (settings_index > 1) settings_index = 1;
+  vita2d_draw_rectangle(32.0f, 80.0f, 896.0f, 420.0f, C_PANEL);
+  draw_textf(font, 50.0f, 112.0f, C_TEXT, 1.0f, "SETTINGS");
+  draw_textf(font, 50.0f, 136.0f, C_GRID, 0.8f, "UP/DOWN: select  CROSS: change/apply");
+
+  const unsigned int c0 = (settings_index == 0) ? C_ACCENT : C_TEXT;
+  const unsigned int c1 = (settings_index == 1) ? C_ACCENT : C_TEXT;
+  draw_textf(font, 60.0f, 182.0f, c0, 0.9f, "Scan profile: %s", profile_name(scan_profile));
+  draw_textf(font, 60.0f, 212.0f, c1, 0.9f, "Apply profile to scanner now");
+  draw_textf(font, 60.0f, 260.0f, C_GRID, 0.84f,
+             "Quick: fast/low coverage | Normal: balanced | Deep: slower/max coverage");
+}
+
 static void draw_alerts_screen(const AlertManager *alerts, int scroll, vita2d_pgf *font, uint64_t now_us) {
   (void)now_us;
   vita2d_draw_rectangle(32.0f, 80.0f, 896.0f, 420.0f, C_PANEL);
@@ -482,6 +506,8 @@ void render_frame(const NetMonitor *monitor,
                   int scan_scroll,
                   int selected_host_index,
                   int alerts_scroll,
+                  int settings_index,
+                  ScanProfile scan_profile,
                   AppScreen screen,
                   vita2d_pgf *font,
                   uint64_t now_us) {
@@ -499,9 +525,7 @@ void render_frame(const NetMonitor *monitor,
   } else if (screen == APP_SCREEN_ALERTS) {
     draw_alerts_screen(alerts, alerts_scroll, font, now_us);
   } else if (screen == APP_SCREEN_SETTINGS) {
-    draw_placeholder_screen(font, "SETTINGS",
-                            "Profiles, audio feedback and export actions will be configured here.",
-                            "Planned: persistent config in ux0:data/vita_wifi_scope.");
+    draw_settings_screen(font, settings_index, scan_profile);
   } else if (screen == APP_SCREEN_EXPORTS) {
     draw_placeholder_screen(font, "EXPORTS",
                             "Interpreted export browser (list + detail) will be available here.",

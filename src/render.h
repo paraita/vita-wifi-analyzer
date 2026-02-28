@@ -24,6 +24,12 @@ typedef enum ScanDataSource {
   SCAN_SOURCE_PROXY = 1
 } ScanDataSource;
 
+typedef enum ScanProfile {
+  SCAN_PROFILE_QUICK = 0,
+  SCAN_PROFILE_NORMAL = 1,
+  SCAN_PROFILE_DEEP = 2
+} ScanProfile;
+
 void render_frame(const NetMonitor *monitor,
                   const LatencyProbeMetrics *latency,
                   const LanScannerMetrics *scanner,
@@ -33,6 +39,8 @@ void render_frame(const NetMonitor *monitor,
                   int scan_scroll,
                   int selected_host_index,
                   int alerts_scroll,
+                  int settings_index,
+                  ScanProfile scan_profile,
                   AppScreen screen,
                   vita2d_pgf *font,
                   uint64_t now_us);
