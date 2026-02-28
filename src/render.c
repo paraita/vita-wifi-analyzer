@@ -219,6 +219,18 @@ static void format_ports(const LanHostResult *host, char *out, size_t out_len) {
   }
 }
 
+static void format_sources(uint32_t flags, char *out, size_t out_len) {
+  out[0] = '\0';
+  if (flags & DISCOVERY_SRC_MDNS) strncat(out, "mDNS ", out_len - strlen(out) - 1);
+  if (flags & DISCOVERY_SRC_SSDP) strncat(out, "SSDP ", out_len - strlen(out) - 1);
+  if (flags & DISCOVERY_SRC_NBNS) strncat(out, "NBNS ", out_len - strlen(out) - 1);
+  if (flags & DISCOVERY_SRC_ICMP) strncat(out, "ICMP ", out_len - strlen(out) - 1);
+  if (flags & DISCOVERY_SRC_TCP) strncat(out, "TCP ", out_len - strlen(out) - 1);
+  if (out[0] == '\0') {
+    snprintf(out, out_len, "-");
+  }
+}
+
 static void draw_scan_screen(const LanScannerMetrics *scanner,
                              const ProxyClientMetrics *proxy,
                              ScanDataSource source,
@@ -291,21 +303,30 @@ static void draw_scan_screen(const LanScannerMetrics *scanner,
   draw_textf(font, 42.0f, 196.0f, C_GRID, 0.78f, "Last error: %d (0x%08X)", last_error, (unsigned int)last_error);
   if (!showing_proxy) {
     const char *icmp_state = (icmp_supported > 0) ? "yes" : (icmp_supported == 0) ? "no" : "unknown";
-    draw_textf(font, 360.0f, 196.0f, C_GRID, 0.78f, "ICMP supported: %s", icmp_state);
+    draw_textf(font, 360.0f, 196.0f, C_GRID, 0.78f,
+               "ICMP:%s mDNS:%s SSDP:%s NBNS:%s",
+               icmp_state,
+               scanner->mdns_running ? "on" : "off",
+               scanner->ssdp_running ? "on" : "off",
+               scanner->nbns_running ? "on" : "off");
   }
+  draw_textf(font, 650.0f, 216.0f, C_GRID, 0.72f, "Hits M:%u S:%u N:%u I:%u T:%u",
+             scanner->mdns_hits, scanner->ssdp_hits, scanner->nbns_hits, scanner->icmp_hits, scanner->tcp_hits);
   draw_textf(font, 790.0f, 196.0f, C_GRID, 0.78f, "Rows: %u", host_count);
   (void)subnet;
 
   const float table_x = 42.0f;
-  const float table_y = 220.0f;
+  const float table_y = 238.0f;
   const float table_w = 876.0f;
   const float row_h = 24.0f;
   const int rows_visible = 10;
 
   vita2d_draw_rectangle(table_x, table_y, table_w, row_h, RGBA8(26, 44, 47, 255));
-  draw_textf(font, table_x + 12.0f, table_y + 18.0f, C_TEXT, 0.8f, "IP");
-  draw_textf(font, table_x + 280.0f, table_y + 18.0f, C_TEXT, 0.8f, "Open ports");
-  draw_textf(font, table_x + 730.0f, table_y + 18.0f, C_TEXT, 0.8f, "Status");
+  draw_textf(font, table_x + 10.0f, table_y + 18.0f, C_TEXT, 0.75f, "IP");
+  draw_textf(font, table_x + 140.0f, table_y + 18.0f, C_TEXT, 0.75f, "Name");
+  draw_textf(font, table_x + 430.0f, table_y + 18.0f, C_TEXT, 0.75f, "Source");
+  draw_textf(font, table_x + 620.0f, table_y + 18.0f, C_TEXT, 0.75f, "Ports");
+  draw_textf(font, table_x + 780.0f, table_y + 18.0f, C_TEXT, 0.75f, "Status");
 
   for (int r = 0; r < rows_visible; r++) {
     const uint32_t idx = (uint32_t)(scroll + r);
@@ -315,10 +336,16 @@ static void draw_scan_screen(const LanScannerMetrics *scanner,
     if (idx < host_count) {
       const LanHostResult *host = &hosts[idx];
       char ports[96];
+      char sources[96];
       format_ports(host, ports, sizeof(ports));
-      draw_textf(font, table_x + 12.0f, y + 18.0f, C_TEXT, 0.8f, "%s", host->ip);
-      draw_textf(font, table_x + 280.0f, y + 18.0f, C_TEXT, 0.8f, "%s", ports);
-      draw_textf(font, table_x + 730.0f, y + 18.0f, C_PRIMARY, 0.8f, "alive");
+      format_sources(host->source_flags, sources, sizeof(sources));
+      draw_textf(font, table_x + 10.0f, y + 18.0f, C_TEXT, 0.74f, "%s", host->ip);
+      draw_textf(font, table_x + 140.0f, y + 18.0f, C_TEXT, 0.74f, "%s",
+                 host->hostname[0] != '\0' ? host->hostname : "-");
+      draw_textf(font, table_x + 430.0f, y + 18.0f, C_TEXT, 0.74f, "%s", sources);
+      draw_textf(font, table_x + 620.0f, y + 18.0f, C_TEXT, 0.74f, "%s", ports);
+      draw_textf(font, table_x + 780.0f, y + 18.0f, host->is_gateway ? C_ACCENT : C_PRIMARY,
+                 0.74f, host->is_gateway ? "gateway" : "alive");
     } else {
       draw_textf(font, table_x + 12.0f, y + 18.0f, C_GRID, 0.78f, "-");
     }

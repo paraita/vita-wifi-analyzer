@@ -1,6 +1,7 @@
 #ifndef LAN_SCANNER_H
 #define LAN_SCANNER_H
 
+#include "discovery.h"
 #include <stdint.h>
 
 #define LAN_SCANNER_PORT_COUNT 8
@@ -15,9 +16,12 @@ typedef struct LanScannerConfig {
 
 typedef struct LanHostResult {
   char ip[16];
+  char hostname[64];
   uint8_t alive;
+  uint8_t is_gateway;
   uint8_t open_port_count;
   uint16_t open_ports[LAN_SCANNER_PORT_COUNT];
+  uint32_t source_flags;
   int last_error;
 } LanHostResult;
 
@@ -26,12 +30,20 @@ typedef struct LanScannerMetrics {
   uint8_t running;
   uint8_t subnet_valid;
   int8_t icmp_supported;
+  uint8_t mdns_running;
+  uint8_t ssdp_running;
+  uint8_t nbns_running;
   char subnet_cidr[20];
 
   uint32_t hosts_total;
   uint32_t hosts_scanned;
   uint32_t hosts_alive;
   uint32_t scan_round;
+  uint32_t mdns_hits;
+  uint32_t ssdp_hits;
+  uint32_t nbns_hits;
+  uint32_t icmp_hits;
+  uint32_t tcp_hits;
 
   uint32_t host_count;
   LanHostResult hosts[LAN_SCANNER_MAX_HOSTS];
@@ -57,7 +69,13 @@ typedef struct LanScanner {
   uint32_t hosts_scanned;
   uint32_t hosts_alive;
   uint32_t scan_round;
+  uint32_t mdns_hits;
+  uint32_t ssdp_hits;
+  uint32_t nbns_hits;
+  uint32_t icmp_hits;
+  uint32_t tcp_hits;
   int last_error;
+  DiscoveryEngine discovery;
 
   uint32_t host_count;
   LanHostResult hosts[LAN_SCANNER_MAX_HOSTS];
@@ -73,6 +91,7 @@ typedef struct LanScanner {
   uint8_t alive_probe_index;
   uint8_t port_probe_index;
   uint8_t current_host_alive;
+  uint32_t current_source_flags;
   uint8_t current_open_port_count;
   uint16_t current_open_ports[LAN_SCANNER_PORT_COUNT];
   char current_ip[16];

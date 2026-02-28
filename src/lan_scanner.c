@@ -276,6 +276,11 @@ static void begin_new_round(LanScanner *scanner, uint64_t now_us) {
   scanner->hosts_scanned = 0;
   scanner->hosts_alive = 0;
   scanner->host_count = 0;
+  scanner->icmp_hits = 0;
+  scanner->tcp_hits = 0;
+  scanner->mdns_hits = 0;
+  scanner->ssdp_hits = 0;
+  scanner->nbns_hits = 0;
   scanner->last_error = 0;
   scanner->next_host = 1;
   scanner->current_host = 0;
@@ -286,26 +291,101 @@ static void begin_new_round(LanScanner *scanner, uint64_t now_us) {
   scanner->alive_probe_index = 0;
   scanner->port_probe_index = 0;
   scanner->current_host_alive = 0;
+  scanner->current_source_flags = 0;
   scanner->current_open_port_count = 0;
   scanner->next_step_us = now_us;
+}
+
+static int is_gateway_ip(const LanScanner *scanner, const char *ip) {
+  if (!scanner->gateway_hint_valid) {
+    return 0;
+  }
+  char gateway[16];
+  snprintf(gateway, sizeof(gateway), "%u.%u.%u.%u",
+           scanner->gateway_a, scanner->gateway_b, scanner->gateway_c, scanner->gateway_d);
+  return strcmp(ip, gateway) == 0;
+}
+
+static LanHostResult *find_host(LanScanner *scanner, const char *ip) {
+  for (uint32_t i = 0; i < scanner->host_count; i++) {
+    if (strcmp(scanner->hosts[i].ip, ip) == 0) {
+      return &scanner->hosts[i];
+    }
+  }
+  return NULL;
+}
+
+static void mark_source_hit(LanScanner *scanner, uint32_t flag) {
+  if (flag == DISCOVERY_SRC_MDNS) scanner->mdns_hits++;
+  else if (flag == DISCOVERY_SRC_SSDP) scanner->ssdp_hits++;
+  else if (flag == DISCOVERY_SRC_NBNS) scanner->nbns_hits++;
+  else if (flag == DISCOVERY_SRC_ICMP) scanner->icmp_hits++;
+  else if (flag == DISCOVERY_SRC_TCP) scanner->tcp_hits++;
+}
+
+static void merge_ports(LanHostResult *host, const uint16_t *ports, uint8_t count) {
+  for (uint8_t i = 0; i < count; i++) {
+    const uint16_t p = ports[i];
+    int exists = 0;
+    for (uint8_t j = 0; j < host->open_port_count; j++) {
+      if (host->open_ports[j] == p) {
+        exists = 1;
+        break;
+      }
+    }
+    if (!exists && host->open_port_count < LAN_SCANNER_PORT_COUNT) {
+      host->open_ports[host->open_port_count++] = p;
+    }
+  }
+}
+
+static void upsert_host(LanScanner *scanner,
+                        const char *ip,
+                        uint32_t source_flags,
+                        const char *hostname,
+                        const uint16_t *ports,
+                        uint8_t port_count,
+                        int last_error) {
+  LanHostResult *host = find_host(scanner, ip);
+  if (host == NULL) {
+    if (scanner->host_count >= scanner->config.max_hosts || scanner->host_count >= LAN_SCANNER_MAX_HOSTS) {
+      return;
+    }
+    host = &scanner->hosts[scanner->host_count++];
+    memset(host, 0, sizeof(*host));
+    snprintf(host->ip, sizeof(host->ip), "%s", ip);
+    host->alive = 1;
+  }
+
+  const uint32_t old_flags = host->source_flags;
+  host->source_flags |= source_flags;
+  uint32_t delta = host->source_flags & ~old_flags;
+  while (delta != 0U) {
+    const uint32_t bit = delta & (~delta + 1U);
+    mark_source_hit(scanner, bit);
+    delta &= ~bit;
+  }
+
+  if (hostname != NULL && hostname[0] != '\0' && host->hostname[0] == '\0') {
+    snprintf(host->hostname, sizeof(host->hostname), "%s", hostname);
+  }
+  if (ports != NULL && port_count > 0U) {
+    merge_ports(host, ports, port_count);
+  }
+  if (last_error != 0) {
+    host->last_error = last_error;
+  }
+  host->is_gateway = (uint8_t)is_gateway_ip(scanner, ip);
+  host->alive = 1;
+  scanner->hosts_alive = scanner->host_count;
 }
 
 static void finalize_host(LanScanner *scanner) {
   scanner->hosts_scanned++;
 
   if (scanner->current_host_alive) {
-    scanner->hosts_alive++;
-    if (scanner->host_count < scanner->config.max_hosts && scanner->host_count < LAN_SCANNER_MAX_HOSTS) {
-      LanHostResult *out = &scanner->hosts[scanner->host_count++];
-      memset(out, 0, sizeof(*out));
-      snprintf(out->ip, sizeof(out->ip), "%s", scanner->current_ip);
-      out->alive = 1;
-      out->open_port_count = scanner->current_open_port_count;
-      for (uint8_t i = 0; i < out->open_port_count; i++) {
-        out->open_ports[i] = scanner->current_open_ports[i];
-      }
-      out->last_error = scanner->last_error;
-    }
+    upsert_host(scanner, scanner->current_ip, scanner->current_source_flags, NULL,
+                scanner->current_open_ports, scanner->current_open_port_count, scanner->last_error);
   }
 
   scanner->current_host = 0;
@@ -313,6 +393,7 @@ static void finalize_host(LanScanner *scanner) {
   scanner->alive_probe_index = 0;
   scanner->port_probe_index = 0;
   scanner->current_host_alive = 0;
+  scanner->current_source_flags = 0;
   scanner->current_open_port_count = 0;
 }
 
@@ -353,6 +434,7 @@ void lan_scanner_default_config(LanScannerConfig *cfg) {
 void lan_scanner_init(LanScanner *scanner) {
   memset(scanner, 0, sizeof(*scanner));
   lan_scanner_default_config(&scanner->config);
+  discovery_init(&scanner->discovery);
   scanner->subnet_valid = 0;
   scanner->running = 0;
   scanner->phase = SCAN_PHASE_RESOLVE;
@@ -387,10 +469,18 @@ void lan_scanner_get_metrics(const LanScanner *scanner, LanScannerMetrics *out) 
   out->running = (scanner->running != 0);
   out->subnet_valid = (scanner->subnet_valid != 0);
   out->icmp_supported = scanner->icmp_supported;
+  out->mdns_running = (uint8_t)(scanner->discovery.mdns_running != 0);
+  out->ssdp_running = (uint8_t)(scanner->discovery.ssdp_running != 0);
+  out->nbns_running = (uint8_t)(scanner->discovery.nbns_running != 0);
   out->hosts_total = 254;
   out->hosts_scanned = scanner->hosts_scanned;
   out->hosts_alive = scanner->hosts_alive;
   out->scan_round = scanner->scan_round;
+  out->mdns_hits = scanner->mdns_hits;
+  out->ssdp_hits = scanner->ssdp_hits;
+  out->nbns_hits = scanner->nbns_hits;
+  out->icmp_hits = scanner->icmp_hits;
+  out->tcp_hits = scanner->tcp_hits;
   out->last_error = scanner->last_error;
   snprintf(out->subnet_cidr, sizeof(out->subnet_cidr), "%s", scanner->subnet_cidr);
 
@@ -504,6 +594,15 @@ void lan_scanner_tick(LanScanner *scanner, uint64_t now_us) {
     scanner->current_open_port_count = 0;
   }
 
+  if (scanner->subnet_valid) {
+    DiscoveryEvent events[16];
+    uint32_t event_count = 0;
+    discovery_tick(&scanner->discovery, now_us, scanner->subnet_prefix, events, 16, &event_count);
+    for (uint32_t i = 0; i < event_count; i++) {
+      upsert_host(scanner, events[i].ip, events[i].source_flags, events[i].hostname, NULL, 0, 0);
+    }
+  }
+
   if (scanner->current_host == 0U) {
     if (!select_next_host(scanner)) {
       scanner->scan_round++;
@@ -545,6 +644,11 @@ void lan_scanner_tick(LanScanner *scanner, uint64_t now_us) {
     }
     if (pr == PROBE_OPEN || pr == PROBE_HOST_RESPONDED) {
       scanner->current_host_alive = 1;
+      if (scanner->alive_probe_index == 0U) {
+        scanner->current_source_flags |= DISCOVERY_SRC_ICMP;
+      } else {
+        scanner->current_source_flags |= DISCOVERY_SRC_TCP;
+      }
       scanner->phase = SCAN_PHASE_PORTS;
       scanner->port_probe_index = 0;
       scanner->next_step_us = now_us + STEP_INTERVAL_US;
