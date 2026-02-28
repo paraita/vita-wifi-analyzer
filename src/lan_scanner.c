@@ -1,0 +1,583 @@
+#include "lan_scanner.h"
+
+#include <psp2/net/net.h>
+#include <psp2/net/netctl.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+enum {
+  STEP_INTERVAL_US = 20000
+};
+
+typedef struct IcmpEchoPacket {
+  SceNetIcmpHeader header;
+  uint8_t payload[8];
+} IcmpEchoPacket;
+
+typedef enum ProbeResult {
+  PROBE_NO_RESPONSE = 0,
+  PROBE_HOST_RESPONDED = 1,
+  PROBE_OPEN = 2
+} ProbeResult;
+
+typedef enum ScanPhase {
+  SCAN_PHASE_RESOLVE = 0,
+  SCAN_PHASE_ALIVE = 1,
+  SCAN_PHASE_PORTS = 2
+} ScanPhase;
+
+static int resolve_local_subnet(char *prefix_out, size_t prefix_len, char *cidr_out, size_t cidr_len) {
+  SceNetCtlInfo info;
+  memset(&info, 0, sizeof(info));
+  if (sceNetCtlInetGetInfo(SCE_NETCTL_INFO_GET_IP_ADDRESS, &info) < 0) {
+    return -1;
+  }
+
+  unsigned int a = 0;
+  unsigned int b = 0;
+  unsigned int c = 0;
+  unsigned int d = 0;
+  if (sscanf(info.ip_address, "%u.%u.%u.%u", &a, &b, &c, &d) != 4) {
+    return -2;
+  }
+  if (a > 255U || b > 255U || c > 255U || d > 255U || (a == 0U && b == 0U && c == 0U)) {
+    return -3;
+  }
+
+  snprintf(prefix_out, prefix_len, "%u.%u.%u.", a, b, c);
+  snprintf(cidr_out, cidr_len, "%u.%u.%u.0/24", a, b, c);
+  return 0;
+}
+
+static ProbeResult probe_tcp_port(const char *ip, uint16_t port, uint32_t timeout_ms, int *err_out) {
+  int sock = -1;
+  int ep = -1;
+  ProbeResult result = PROBE_NO_RESPONSE;
+
+  SceNetSockaddrIn addr;
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_len = sizeof(addr);
+  addr.sin_family = SCE_NET_AF_INET;
+  addr.sin_port = sceNetHtons(port);
+  if (sceNetInetPton(SCE_NET_AF_INET, ip, &addr.sin_addr) != 1) {
+    *err_out = SCE_NET_EINVAL;
+    return PROBE_NO_RESPONSE;
+  }
+
+  sock = sceNetSocket("lan_scan", SCE_NET_AF_INET, SCE_NET_SOCK_STREAM, SCE_NET_IPPROTO_TCP);
+  if (sock < 0) {
+    *err_out = -*sceNetErrnoLoc();
+    goto cleanup;
+  }
+
+  int nbio = 1;
+  if (sceNetSetsockopt(sock, SCE_NET_SOL_SOCKET, SCE_NET_SO_NBIO, &nbio, sizeof(nbio)) < 0) {
+    *err_out = -*sceNetErrnoLoc();
+    goto cleanup;
+  }
+
+  int rc = sceNetConnect(sock, (const SceNetSockaddr *)&addr, sizeof(addr));
+  if (rc < 0) {
+    const int err = *sceNetErrnoLoc();
+    if (err != SCE_NET_EINPROGRESS) {
+      if (err == SCE_NET_ECONNREFUSED) {
+        *err_out = -err;
+        result = PROBE_HOST_RESPONDED;
+      } else {
+        *err_out = -err;
+      }
+      goto cleanup;
+    }
+  }
+
+  ep = sceNetEpollCreate("lan_scan_ep", 0);
+  if (ep < 0) {
+    *err_out = -*sceNetErrnoLoc();
+    goto cleanup;
+  }
+
+  SceNetEpollEvent add_ev;
+  memset(&add_ev, 0, sizeof(add_ev));
+  add_ev.events = SCE_NET_EPOLLOUT | SCE_NET_EPOLLERR | SCE_NET_EPOLLHUP;
+  add_ev.data.fd = sock;
+  if (sceNetEpollControl(ep, SCE_NET_EPOLL_CTL_ADD, sock, &add_ev) < 0) {
+    *err_out = -*sceNetErrnoLoc();
+    goto cleanup;
+  }
+
+  SceNetEpollEvent event;
+  memset(&event, 0, sizeof(event));
+  rc = sceNetEpollWait(ep, &event, 1, (int)timeout_ms);
+  if (rc <= 0) {
+    *err_out = -SCE_NET_ETIMEDOUT;
+    goto cleanup;
+  }
+
+  int so_error = 0;
+  unsigned int so_len = sizeof(so_error);
+  if (sceNetGetsockopt(sock, SCE_NET_SOL_SOCKET, SCE_NET_SO_ERROR, &so_error, &so_len) < 0) {
+    *err_out = -*sceNetErrnoLoc();
+    goto cleanup;
+  }
+
+  if (so_error == 0) {
+    *err_out = 0;
+    result = PROBE_OPEN;
+  } else if (so_error == SCE_NET_ECONNREFUSED) {
+    *err_out = -so_error;
+    result = PROBE_HOST_RESPONDED;
+  } else {
+    *err_out = -so_error;
+  }
+
+cleanup:
+  if (ep >= 0) {
+    sceNetEpollDestroy(ep);
+  }
+  if (sock >= 0) {
+    sceNetSocketClose(sock);
+  }
+  return result;
+}
+
+static uint16_t icmp_checksum(const void *data, size_t len) {
+  const uint8_t *bytes = (const uint8_t *)data;
+  uint32_t sum = 0;
+  while (len > 1U) {
+    sum += ((uint32_t)bytes[0] << 8) | (uint32_t)bytes[1];
+    bytes += 2;
+    len -= 2;
+  }
+  if (len == 1U) {
+    sum += ((uint32_t)bytes[0] << 8);
+  }
+  while ((sum >> 16) != 0U) {
+    sum = (sum & 0xFFFFU) + (sum >> 16);
+  }
+  return (uint16_t)(~sum & 0xFFFFU);
+}
+
+static ProbeResult probe_icmp_echo(const char *ip, uint32_t timeout_ms, int *err_out) {
+  int sock = -1;
+  int ep = -1;
+  ProbeResult result = PROBE_NO_RESPONSE;
+
+  SceNetSockaddrIn dst;
+  memset(&dst, 0, sizeof(dst));
+  dst.sin_len = sizeof(dst);
+  dst.sin_family = SCE_NET_AF_INET;
+  if (sceNetInetPton(SCE_NET_AF_INET, ip, &dst.sin_addr) != 1) {
+    *err_out = -SCE_NET_EINVAL;
+    return PROBE_NO_RESPONSE;
+  }
+
+  sock = sceNetSocket("lan_icmp", SCE_NET_AF_INET, SCE_NET_SOCK_RAW, SCE_NET_IPPROTO_ICMP);
+  if (sock < 0) {
+    *err_out = -*sceNetErrnoLoc();
+    goto cleanup;
+  }
+
+  int nbio = 1;
+  if (sceNetSetsockopt(sock, SCE_NET_SOL_SOCKET, SCE_NET_SO_NBIO, &nbio, sizeof(nbio)) < 0) {
+    *err_out = -*sceNetErrnoLoc();
+    goto cleanup;
+  }
+
+  ep = sceNetEpollCreate("lan_icmp_ep", 0);
+  if (ep < 0) {
+    *err_out = -*sceNetErrnoLoc();
+    goto cleanup;
+  }
+
+  SceNetEpollEvent add_ev;
+  memset(&add_ev, 0, sizeof(add_ev));
+  add_ev.events = SCE_NET_EPOLLIN | SCE_NET_EPOLLERR | SCE_NET_EPOLLHUP;
+  add_ev.data.fd = sock;
+  if (sceNetEpollControl(ep, SCE_NET_EPOLL_CTL_ADD, sock, &add_ev) < 0) {
+    *err_out = -*sceNetErrnoLoc();
+    goto cleanup;
+  }
+
+  const uint16_t req_id = 0x4256;
+  for (uint16_t seq = 1; seq <= 3; seq++) {
+    IcmpEchoPacket pkt;
+    memset(&pkt, 0, sizeof(pkt));
+    pkt.header.type = SCE_NET_ICMP_TYPE_ECHO_REQUEST;
+    pkt.header.code = 0;
+    pkt.header.un.echo.id = sceNetHtons(req_id);
+    pkt.header.un.echo.sequence = sceNetHtons(seq);
+    for (uint32_t i = 0; i < sizeof(pkt.payload); i++) {
+      pkt.payload[i] = (uint8_t)(0xA0U + i + seq);
+    }
+    pkt.header.checksum = icmp_checksum(&pkt, sizeof(pkt));
+
+    const int sent = sceNetSendto(sock, &pkt, sizeof(pkt), 0, (const SceNetSockaddr *)&dst, sizeof(dst));
+    if (sent < 0) {
+      *err_out = -*sceNetErrnoLoc();
+      goto cleanup;
+    }
+
+    SceNetEpollEvent event;
+    memset(&event, 0, sizeof(event));
+    const int rc = sceNetEpollWait(ep, &event, 1, (int)timeout_ms);
+    if (rc <= 0) {
+      *err_out = -SCE_NET_ETIMEDOUT;
+      continue;
+    }
+
+    if ((event.events & (SCE_NET_EPOLLERR | SCE_NET_EPOLLHUP)) != 0U) {
+      *err_out = -SCE_NET_ECONNRESET;
+      continue;
+    }
+
+    uint8_t recv_buf[128];
+    SceNetSockaddrIn src;
+    unsigned int src_len = sizeof(src);
+    const int recv_len = sceNetRecvfrom(sock, recv_buf, sizeof(recv_buf), 0, (SceNetSockaddr *)&src, &src_len);
+    if (recv_len <= 0) {
+      *err_out = (recv_len == 0) ? -SCE_NET_ECONNRESET : -*sceNetErrnoLoc();
+      continue;
+    }
+
+    if (src.sin_addr.s_addr != dst.sin_addr.s_addr) {
+      continue;
+    }
+    if (recv_len < (int)(sizeof(SceNetIpHeader) + sizeof(SceNetIcmpHeader))) {
+      continue;
+    }
+
+    const SceNetIpHeader *ip_hdr = (const SceNetIpHeader *)recv_buf;
+    const uint8_t ihl = (uint8_t)((ip_hdr->un.ver_hl & 0x0FU) * 4U);
+    if (recv_len < (int)(ihl + sizeof(SceNetIcmpHeader))) {
+      continue;
+    }
+
+    const SceNetIcmpHeader *icmp_hdr = (const SceNetIcmpHeader *)(recv_buf + ihl);
+    if (icmp_hdr->type == SCE_NET_ICMP_TYPE_ECHO_REPLY &&
+        sceNetNtohs(icmp_hdr->un.echo.id) == req_id) {
+      *err_out = 0;
+      result = PROBE_HOST_RESPONDED;
+      goto cleanup;
+    }
+  }
+
+cleanup:
+  if (ep >= 0) {
+    sceNetEpollDestroy(ep);
+  }
+  if (sock >= 0) {
+    sceNetSocketClose(sock);
+  }
+  return result;
+}
+
+static void begin_new_round(LanScanner *scanner, uint64_t now_us) {
+  scanner->hosts_scanned = 0;
+  scanner->hosts_alive = 0;
+  scanner->host_count = 0;
+  scanner->last_error = 0;
+  scanner->next_host = 1;
+  scanner->current_host = 0;
+  scanner->preferred_host = 0;
+  scanner->preferred_host_valid = 0;
+  scanner->preferred_host_done = 0;
+  scanner->phase = SCAN_PHASE_RESOLVE;
+  scanner->alive_probe_index = 0;
+  scanner->port_probe_index = 0;
+  scanner->current_host_alive = 0;
+  scanner->current_open_port_count = 0;
+  scanner->next_step_us = now_us;
+}
+
+static void finalize_host(LanScanner *scanner) {
+  scanner->hosts_scanned++;
+
+  if (scanner->current_host_alive) {
+    scanner->hosts_alive++;
+    if (scanner->host_count < scanner->config.max_hosts && scanner->host_count < LAN_SCANNER_MAX_HOSTS) {
+      LanHostResult *out = &scanner->hosts[scanner->host_count++];
+      memset(out, 0, sizeof(*out));
+      snprintf(out->ip, sizeof(out->ip), "%s", scanner->current_ip);
+      out->alive = 1;
+      out->open_port_count = scanner->current_open_port_count;
+      for (uint8_t i = 0; i < out->open_port_count; i++) {
+        out->open_ports[i] = scanner->current_open_ports[i];
+      }
+      out->last_error = scanner->last_error;
+    }
+  }
+
+  scanner->current_host = 0;
+  scanner->phase = SCAN_PHASE_ALIVE;
+  scanner->alive_probe_index = 0;
+  scanner->port_probe_index = 0;
+  scanner->current_host_alive = 0;
+  scanner->current_open_port_count = 0;
+}
+
+static int select_next_host(LanScanner *scanner) {
+  if (!scanner->preferred_host_done && scanner->preferred_host_valid) {
+    scanner->current_host = scanner->preferred_host;
+    scanner->preferred_host_done = 1;
+    return 1;
+  }
+
+  while (scanner->next_host <= 254U) {
+    const uint32_t candidate = scanner->next_host++;
+    if (scanner->preferred_host_valid && candidate == scanner->preferred_host) {
+      continue;
+    }
+    scanner->current_host = candidate;
+    return 1;
+  }
+
+  return 0;
+}
+
+void lan_scanner_default_config(LanScannerConfig *cfg) {
+  memset(cfg, 0, sizeof(*cfg));
+  cfg->interval_ms_per_host = 25;
+  cfg->connect_timeout_ms = 120;
+  cfg->ports[0] = 22;
+  cfg->ports[1] = 23;
+  cfg->ports[2] = 53;
+  cfg->ports[3] = 80;
+  cfg->ports[4] = 123;
+  cfg->ports[5] = 139;
+  cfg->ports[6] = 443;
+  cfg->ports[7] = 445;
+  cfg->max_hosts = LAN_SCANNER_MAX_HOSTS;
+}
+
+void lan_scanner_init(LanScanner *scanner) {
+  memset(scanner, 0, sizeof(*scanner));
+  lan_scanner_default_config(&scanner->config);
+  scanner->subnet_valid = 0;
+  scanner->running = 0;
+  scanner->phase = SCAN_PHASE_RESOLVE;
+  scanner->icmp_supported = -1;
+}
+
+int lan_scanner_start(LanScanner *scanner, const LanScannerConfig *cfg) {
+  if (cfg != NULL) {
+    scanner->config = *cfg;
+    if (scanner->config.max_hosts == 0 || scanner->config.max_hosts > LAN_SCANNER_MAX_HOSTS) {
+      scanner->config.max_hosts = LAN_SCANNER_MAX_HOSTS;
+    }
+  }
+
+  scanner->running = 1;
+  begin_new_round(scanner, 0);
+  return 0;
+}
+
+void lan_scanner_stop(LanScanner *scanner) {
+  scanner->running = 0;
+}
+
+void lan_scanner_request_rescan(LanScanner *scanner) {
+  scanner->running = 1;
+  begin_new_round(scanner, 0);
+}
+
+void lan_scanner_get_metrics(const LanScanner *scanner, LanScannerMetrics *out) {
+  memset(out, 0, sizeof(*out));
+  out->enabled = (scanner->running != 0);
+  out->running = (scanner->running != 0);
+  out->subnet_valid = (scanner->subnet_valid != 0);
+  out->icmp_supported = scanner->icmp_supported;
+  out->hosts_total = 254;
+  out->hosts_scanned = scanner->hosts_scanned;
+  out->hosts_alive = scanner->hosts_alive;
+  out->scan_round = scanner->scan_round;
+  out->last_error = scanner->last_error;
+  snprintf(out->subnet_cidr, sizeof(out->subnet_cidr), "%s", scanner->subnet_cidr);
+
+  out->host_count = scanner->host_count;
+  if (out->host_count > LAN_SCANNER_MAX_HOSTS) {
+    out->host_count = LAN_SCANNER_MAX_HOSTS;
+  }
+  for (uint32_t i = 0; i < out->host_count; i++) {
+    out->hosts[i] = scanner->hosts[i];
+  }
+}
+
+void lan_scanner_set_ip_hint(LanScanner *scanner, const char *ip_address) {
+  if (ip_address == NULL || ip_address[0] == '\0' || strcmp(ip_address, "N/A") == 0) {
+    scanner->hinted_prefix_valid = 0;
+    return;
+  }
+
+  unsigned int a = 0;
+  unsigned int b = 0;
+  unsigned int c = 0;
+  unsigned int d = 0;
+  if (sscanf(ip_address, "%u.%u.%u.%u", &a, &b, &c, &d) != 4 ||
+      a > 255U || b > 255U || c > 255U || d > 255U || (a == 0U && b == 0U && c == 0U)) {
+    scanner->hinted_prefix_valid = 0;
+    return;
+  }
+
+  scanner->hinted_a = a;
+  scanner->hinted_b = b;
+  scanner->hinted_c = c;
+  scanner->hinted_prefix_valid = 1;
+}
+
+void lan_scanner_set_gateway_hint(LanScanner *scanner, const char *gateway_ip) {
+  if (gateway_ip == NULL || gateway_ip[0] == '\0' || strcmp(gateway_ip, "N/A") == 0) {
+    scanner->gateway_hint_valid = 0;
+    return;
+  }
+
+  unsigned int a = 0;
+  unsigned int b = 0;
+  unsigned int c = 0;
+  unsigned int d = 0;
+  if (sscanf(gateway_ip, "%u.%u.%u.%u", &a, &b, &c, &d) != 4 ||
+      a > 255U || b > 255U || c > 255U || d > 255U || d == 0U || d == 255U) {
+    scanner->gateway_hint_valid = 0;
+    return;
+  }
+
+  scanner->gateway_a = a;
+  scanner->gateway_b = b;
+  scanner->gateway_c = c;
+  scanner->gateway_d = d;
+  scanner->gateway_hint_valid = 1;
+}
+
+void lan_scanner_tick(LanScanner *scanner, uint64_t now_us) {
+  static const uint16_t alive_ports[] = {53, 80, 443, 445, 139, 22, 8080, 62078, 554, 8009};
+  const uint8_t alive_steps = (uint8_t)(1 + (sizeof(alive_ports) / sizeof(alive_ports[0])));
+
+  if (!scanner->running) {
+    return;
+  }
+  if (now_us < scanner->next_step_us) {
+    return;
+  }
+
+  if (scanner->phase == SCAN_PHASE_RESOLVE) {
+    int rc = -1;
+    if (scanner->hinted_prefix_valid) {
+      snprintf(scanner->subnet_prefix, sizeof(scanner->subnet_prefix), "%u.%u.%u.",
+               scanner->hinted_a, scanner->hinted_b, scanner->hinted_c);
+      snprintf(scanner->subnet_cidr, sizeof(scanner->subnet_cidr), "%u.%u.%u.0/24",
+               scanner->hinted_a, scanner->hinted_b, scanner->hinted_c);
+      rc = 0;
+    }
+    if (rc < 0) {
+      rc = resolve_local_subnet(scanner->subnet_prefix, sizeof(scanner->subnet_prefix),
+                                scanner->subnet_cidr, sizeof(scanner->subnet_cidr));
+    }
+    if (rc < 0) {
+      scanner->subnet_valid = 0;
+      scanner->last_error = rc;
+      scanner->next_step_us = now_us + 250000ULL;
+      return;
+    }
+
+    scanner->subnet_valid = 1;
+    scanner->preferred_host_valid = 0;
+    scanner->preferred_host_done = 0;
+    unsigned int subnet_a = 0;
+    unsigned int subnet_b = 0;
+    unsigned int subnet_c = 0;
+    if (sscanf(scanner->subnet_prefix, "%u.%u.%u.", &subnet_a, &subnet_b, &subnet_c) != 3) {
+      subnet_a = subnet_b = subnet_c = 0;
+    }
+    if (scanner->gateway_hint_valid &&
+        scanner->gateway_a == subnet_a &&
+        scanner->gateway_b == subnet_b &&
+        scanner->gateway_c == subnet_c) {
+      scanner->preferred_host = scanner->gateway_d;
+      if (scanner->preferred_host >= 1U && scanner->preferred_host <= 254U) {
+        scanner->preferred_host_valid = 1;
+      }
+    }
+    scanner->phase = SCAN_PHASE_ALIVE;
+    scanner->alive_probe_index = 0;
+    scanner->port_probe_index = 0;
+    scanner->current_host_alive = 0;
+    scanner->current_open_port_count = 0;
+  }
+
+  if (scanner->current_host == 0U) {
+    if (!select_next_host(scanner)) {
+      scanner->scan_round++;
+      scanner->running = 0;
+      scanner->next_step_us = now_us + 500000ULL;
+      return;
+    }
+  }
+
+  if (scanner->current_host > 254U) {
+    scanner->scan_round++;
+    scanner->running = 0;
+    scanner->next_step_us = now_us + 500000ULL;
+    return;
+  }
+
+  snprintf(scanner->current_ip, sizeof(scanner->current_ip), "%s%u", scanner->subnet_prefix, scanner->current_host);
+
+  if (scanner->phase == SCAN_PHASE_ALIVE) {
+    int probe_err = 0;
+    ProbeResult pr = PROBE_NO_RESPONSE;
+
+    if (scanner->alive_probe_index == 0U) {
+      if (scanner->icmp_supported != 0) {
+        pr = probe_icmp_echo(scanner->current_ip, scanner->config.connect_timeout_ms, &probe_err);
+        if (probe_err == -SCE_NET_EPROTONOSUPPORT || probe_err == -SCE_NET_EPERM) {
+          scanner->icmp_supported = 0;
+        } else if (probe_err == 0 || probe_err == -SCE_NET_ETIMEDOUT) {
+          scanner->icmp_supported = 1;
+        }
+      }
+    } else {
+      const uint16_t port = alive_ports[scanner->alive_probe_index - 1U];
+      pr = probe_tcp_port(scanner->current_ip, port, scanner->config.connect_timeout_ms, &probe_err);
+    }
+
+    if (probe_err != -SCE_NET_ETIMEDOUT) {
+      scanner->last_error = probe_err;
+    }
+    if (pr == PROBE_OPEN || pr == PROBE_HOST_RESPONDED) {
+      scanner->current_host_alive = 1;
+      scanner->phase = SCAN_PHASE_PORTS;
+      scanner->port_probe_index = 0;
+      scanner->next_step_us = now_us + STEP_INTERVAL_US;
+      return;
+    }
+
+    scanner->alive_probe_index++;
+    if (scanner->alive_probe_index >= alive_steps) {
+      finalize_host(scanner);
+    }
+    scanner->next_step_us = now_us + STEP_INTERVAL_US;
+    return;
+  }
+
+  if (scanner->phase == SCAN_PHASE_PORTS) {
+    if (scanner->port_probe_index < LAN_SCANNER_PORT_COUNT) {
+      int probe_err = 0;
+      const uint16_t port = scanner->config.ports[scanner->port_probe_index];
+      const ProbeResult pr = probe_tcp_port(scanner->current_ip, port, scanner->config.connect_timeout_ms, &probe_err);
+      if (probe_err != -SCE_NET_ETIMEDOUT) {
+        scanner->last_error = probe_err;
+      }
+      if (pr == PROBE_OPEN && scanner->current_open_port_count < LAN_SCANNER_PORT_COUNT) {
+        scanner->current_open_ports[scanner->current_open_port_count++] = port;
+      }
+      scanner->port_probe_index++;
+      if (scanner->port_probe_index < LAN_SCANNER_PORT_COUNT) {
+        scanner->next_step_us = now_us + STEP_INTERVAL_US;
+        return;
+      }
+    }
+
+    finalize_host(scanner);
+    scanner->next_step_us = now_us + STEP_INTERVAL_US;
+  }
+}
