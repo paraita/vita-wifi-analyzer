@@ -3,6 +3,7 @@
 #include "latency_probe.h"
 #include "lan_scanner.h"
 #include "proxy_client.h"
+#include "alerts.h"
 
 #include <psp2/ctrl.h>
 #include <psp2/kernel/processmgr.h>
@@ -12,6 +13,8 @@
 #include <psp2/sysmodule.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
 #include <vita2d.h>
 
 enum {
@@ -97,6 +100,8 @@ int main(void) {
 
   ProxyClient proxy;
   proxy_client_init(&proxy);
+  AlertManager alerts;
+  alerts_init(&alerts);
 
   const uint64_t poll_interval_us = 1000000ULL / NETMON_SAMPLE_HZ;
   uint64_t next_poll = 0;
@@ -104,6 +109,11 @@ int main(void) {
   ScanDataSource scan_source = SCAN_SOURCE_LOCAL;
   int scan_scroll = 0;
   int selected_host_index = 0;
+  int alerts_scroll = 0;
+  uint32_t prev_scan_round = 0;
+  int prev_scan_error = 0;
+  uint32_t prev_host_count = 0;
+  char prev_hosts[LAN_SCANNER_MAX_HOSTS][16];
   bool local_scan_armed = true;
   unsigned int prev_buttons = 0;
   bool running = true;
@@ -145,6 +155,46 @@ int main(void) {
 
     ProxyClientMetrics proxy_metrics;
     proxy_client_get_metrics(&proxy, &proxy_metrics);
+
+    if (scanner_metrics.scan_round != prev_scan_round) {
+      for (uint32_t i = 0; i < scanner_metrics.host_count; i++) {
+        const char *ip = scanner_metrics.hosts[i].ip;
+        int existed = 0;
+        for (uint32_t j = 0; j < prev_host_count; j++) {
+          if (strcmp(prev_hosts[j], ip) == 0) {
+            existed = 1;
+            break;
+          }
+        }
+        if (!existed) {
+          alerts_push(&alerts, now, ALERT_INFO, "Host joined: %s", ip);
+        }
+      }
+      for (uint32_t j = 0; j < prev_host_count; j++) {
+        int still_exists = 0;
+        for (uint32_t i = 0; i < scanner_metrics.host_count; i++) {
+          if (strcmp(prev_hosts[j], scanner_metrics.hosts[i].ip) == 0) {
+            still_exists = 1;
+            break;
+          }
+        }
+        if (!still_exists) {
+          alerts_push(&alerts, now, ALERT_WARN, "Host left: %s", prev_hosts[j]);
+        }
+      }
+      prev_host_count = scanner_metrics.host_count;
+      if (prev_host_count > LAN_SCANNER_MAX_HOSTS) prev_host_count = LAN_SCANNER_MAX_HOSTS;
+      for (uint32_t i = 0; i < prev_host_count; i++) {
+        snprintf(prev_hosts[i], sizeof(prev_hosts[i]), "%s", scanner_metrics.hosts[i].ip);
+      }
+      prev_scan_round = scanner_metrics.scan_round;
+    }
+
+    if (scanner_metrics.last_error != 0 && scanner_metrics.last_error != -60 && scanner_metrics.last_error != prev_scan_error) {
+      alerts_push(&alerts, now, ALERT_ERROR, "Scanner error: %d (0x%08X)",
+                  scanner_metrics.last_error, (unsigned int)scanner_metrics.last_error);
+    }
+    prev_scan_error = scanner_metrics.last_error;
 
     if (screen == APP_SCREEN_SCAN) {
       if (local_scan_armed && !scanner.running) {
@@ -204,6 +254,20 @@ int main(void) {
           screen = APP_SCREEN_HOST_DETAIL;
         }
       }
+    } else if (screen == APP_SCREEN_ALERTS) {
+      const int max_scroll = (alerts_count(&alerts) > 10U) ? (int)(alerts_count(&alerts) - 10U) : 0;
+      if (pressed & SCE_CTRL_UP) {
+        alerts_scroll--;
+      }
+      if (pressed & SCE_CTRL_DOWN) {
+        alerts_scroll++;
+      }
+      if (pressed & SCE_CTRL_TRIANGLE) {
+        alerts_clear(&alerts);
+        alerts_scroll = 0;
+      }
+      if (alerts_scroll < 0) alerts_scroll = 0;
+      if (alerts_scroll > max_scroll) alerts_scroll = max_scroll;
     } else if (screen == APP_SCREEN_HOST_DETAIL) {
       if (pressed & SCE_CTRL_CIRCLE) {
         screen = APP_SCREEN_SCAN;
@@ -215,7 +279,8 @@ int main(void) {
     }
 
     render_frame(&monitor, &latency_metrics, &scanner_metrics, &proxy_metrics,
-                 scan_source, scan_scroll, selected_host_index, screen, font, now);
+                 &alerts, scan_source, scan_scroll, selected_host_index, alerts_scroll,
+                 screen, font, now);
   }
 
   proxy_client_stop(&proxy);

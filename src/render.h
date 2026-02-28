@@ -5,6 +5,7 @@
 #include "latency_probe.h"
 #include "lan_scanner.h"
 #include "proxy_client.h"
+#include "alerts.h"
 #include <vita2d.h>
 
 typedef enum AppScreen {
@@ -27,9 +28,11 @@ void render_frame(const NetMonitor *monitor,
                   const LatencyProbeMetrics *latency,
                   const LanScannerMetrics *scanner,
                   const ProxyClientMetrics *proxy,
+                  const AlertManager *alerts,
                   ScanDataSource scan_source,
                   int scan_scroll,
                   int selected_host_index,
+                  int alerts_scroll,
                   AppScreen screen,
                   vita2d_pgf *font,
                   uint64_t now_us);

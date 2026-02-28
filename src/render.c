@@ -445,13 +445,43 @@ static void draw_placeholder_screen(vita2d_pgf *font, const char *title, const c
   draw_textf(font, 50.0f, 190.0f, C_GRID, 0.84f, "%s", line2);
 }
 
+static void draw_alerts_screen(const AlertManager *alerts, int scroll, vita2d_pgf *font, uint64_t now_us) {
+  (void)now_us;
+  vita2d_draw_rectangle(32.0f, 80.0f, 896.0f, 420.0f, C_PANEL);
+  draw_textf(font, 50.0f, 112.0f, C_TEXT, 1.0f, "ALERTS");
+  draw_textf(font, 50.0f, 136.0f, C_GRID, 0.8f, "UP/DOWN: scroll  TRIANGLE: clear");
+
+  const uint32_t total = alerts_count(alerts);
+  if (total == 0) {
+    draw_textf(font, 50.0f, 176.0f, C_GRID, 0.9f, "No alerts.");
+    return;
+  }
+
+  const int rows_visible = 10;
+  if (scroll < 0) scroll = 0;
+  if (scroll > (int)total - 1) scroll = (int)total - 1;
+
+  for (int i = 0; i < rows_visible; i++) {
+    const uint32_t idx = (uint32_t)(scroll + i);
+    if (idx >= total) break;
+    AlertEntry e;
+    alerts_get(alerts, idx, &e);
+    const unsigned int color = (e.severity == ALERT_ERROR) ? C_WARN :
+                               (e.severity == ALERT_WARN) ? C_ACCENT : C_TEXT;
+    const uint32_t sec = (uint32_t)(e.timestamp_us / 1000000ULL);
+    draw_textf(font, 50.0f, 176.0f + i * 30.0f, color, 0.78f, "[%06us] %s", sec, e.text);
+  }
+}
+
 void render_frame(const NetMonitor *monitor,
                   const LatencyProbeMetrics *latency,
                   const LanScannerMetrics *scanner,
                   const ProxyClientMetrics *proxy,
+                  const AlertManager *alerts,
                   ScanDataSource scan_source,
                   int scan_scroll,
                   int selected_host_index,
+                  int alerts_scroll,
                   AppScreen screen,
                   vita2d_pgf *font,
                   uint64_t now_us) {
@@ -467,9 +497,7 @@ void render_frame(const NetMonitor *monitor,
   } else if (screen == APP_SCREEN_HOST_DETAIL) {
     draw_host_detail_screen(scanner, selected_host_index, font);
   } else if (screen == APP_SCREEN_ALERTS) {
-    draw_placeholder_screen(font, "ALERTS",
-                            "Realtime host join/leave and critical errors will appear here.",
-                            "Planned: severity filters and acknowledgement.");
+    draw_alerts_screen(alerts, alerts_scroll, font, now_us);
   } else if (screen == APP_SCREEN_SETTINGS) {
     draw_placeholder_screen(font, "SETTINGS",
                             "Profiles, audio feedback and export actions will be configured here.",
