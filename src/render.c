@@ -28,7 +28,11 @@ static const char *screen_tab_name(AppScreen screen) {
     case APP_SCREEN_STATS: return "STATS";
     case APP_SCREEN_SCAN: return "SCAN";
     case APP_SCREEN_HOST_DETAIL: return "DETAIL";
-    case APP_SCREEN_ALERTS: return "ALERTS";
+    case APP_SCREEN_HOST_TOOLS: return "TOOLS";
+    case APP_SCREEN_TIMELINE: return "TIME";
+    case APP_SCREEN_MAP: return "MAP";
+    case APP_SCREEN_ALERTS: return "ALERT";
+    case APP_SCREEN_RULES: return "RULES";
     case APP_SCREEN_SETTINGS: return "SET";
     case APP_SCREEN_BT: return "BT";
     case APP_SCREEN_EXPORTS: return "EXPORT";
@@ -38,9 +42,9 @@ static const char *screen_tab_name(AppScreen screen) {
 
 static const char *profile_name(ScanProfile p) {
   switch (p) {
-    case SCAN_PROFILE_QUICK: return "QUICK";
-    case SCAN_PROFILE_NORMAL: return "NORMAL";
-    case SCAN_PROFILE_DEEP: return "DEEP";
+    case SCAN_PROFILE_QUICK: return "BATTERY";
+    case SCAN_PROFILE_NORMAL: return "BALANCED";
+    case SCAN_PROFILE_DEEP: return "AUDIT";
     default: return "UNKNOWN";
   }
 }
@@ -82,6 +86,18 @@ static void draw_text_centered(vita2d_pgf *font, float y, unsigned int color, fl
     x = 8.0f;
   }
   vita2d_pgf_draw_text(font, x, y, color, scale, text);
+}
+
+static void draw_fx_background(const UiFxState *fx) {
+  if (fx == NULL) {
+    return;
+  }
+  const float phase = fx->scanline_phase;
+  for (int y = 60; y < SCREEN_H - 30; y += 6) {
+    const float shift = fmodf((float)y * 0.07f + phase * 20.0f, 1.0f);
+    const unsigned int c = (shift > 0.5f) ? RGBA8(14, 24, 26, 60) : RGBA8(8, 14, 16, 48);
+    vita2d_draw_rectangle(0.0f, (float)y, (float)SCREEN_W, 1.0f, c);
+  }
 }
 
 static void draw_circle_outline(float cx, float cy, float radius, int segments, unsigned int color) {
@@ -219,6 +235,26 @@ static void draw_nav_hint(vita2d_pgf *font, AppScreen screen) {
                        "L/R:view  UP/DOWN:option  CROSS:apply/open  START:quit");
     return;
   }
+  if (screen == APP_SCREEN_HOST_TOOLS) {
+    draw_text_centered(font, 525.0f, C_GRID, 0.75f,
+                       "CROSS:DNS  SQUARE:HTTP  TRIANGLE:HTTPS  SELECT:RTT  CIRCLE:back");
+    return;
+  }
+  if (screen == APP_SCREEN_TIMELINE) {
+    draw_text_centered(font, 525.0f, C_GRID, 0.75f,
+                       "L/R:view  UP/DOWN:select round  START:quit");
+    return;
+  }
+  if (screen == APP_SCREEN_MAP) {
+    draw_text_centered(font, 525.0f, C_GRID, 0.75f,
+                       "L/R:view  UP/DOWN:node select  START:quit");
+    return;
+  }
+  if (screen == APP_SCREEN_RULES) {
+    draw_text_centered(font, 525.0f, C_GRID, 0.75f,
+                       "L/R:view  UP/DOWN:rule  CROSS:toggle  START:quit");
+    return;
+  }
   if (screen == APP_SCREEN_BT) {
     draw_text_centered(font, 525.0f, C_GRID, 0.75f,
                        "L/R:view  TRIANGLE:inquiry start/stop  SELECT:refresh  START:quit");
@@ -226,7 +262,7 @@ static void draw_nav_hint(vita2d_pgf *font, AppScreen screen) {
   }
 
   const char *text = (screen == APP_SCREEN_HOST_DETAIL)
-                       ? "L/R:view  CIRCLE:back to scan  START:quit"
+                       ? "L/R:view  CROSS:host tools  TRIANGLE:white-list toggle  CIRCLE:back"
                        : "L/R:switch view  START:quit";
   draw_text_centered(font, 525.0f, C_GRID, 0.8f, text);
 }
@@ -239,15 +275,16 @@ static void draw_top_nav(vita2d_pgf *font, AppScreen screen) {
   const float index_w = 82.0f;
   const float tabs_w = nav_w - index_w;
   const float slot_w = tabs_w / (float)APP_SCREEN_COUNT;
+  const float tab_scale = 0.56f;
 
   vita2d_draw_rectangle(nav_x, nav_y, nav_w, nav_h, RGBA8(14, 24, 27, 255));
   for (int i = 0; i < APP_SCREEN_COUNT; i++) {
     const char *name = screen_tab_name((AppScreen)i);
     const float slot_x = nav_x + (float)i * slot_w;
-    const int text_w = vita2d_pgf_text_width(font, 0.68f, name);
+    const int text_w = vita2d_pgf_text_width(font, tab_scale, name);
     const float x = slot_x + (slot_w - (float)text_w) * 0.5f;
     const unsigned int color = (i == (int)screen) ? C_ACCENT : C_GRID;
-    draw_textf(font, x, 39.0f, color, 0.68f, "%s", name);
+    draw_textf(font, x, 37.0f, color, tab_scale, "%s", name);
     if (i > 0) {
       const float sep_x = slot_x;
       vita2d_draw_line(sep_x, nav_y + 8.0f, sep_x, nav_y + nav_h - 8.0f, RGBA8(24, 40, 44, 255));
@@ -484,9 +521,25 @@ static void draw_scan_screen(const LanScannerMetrics *scanner,
       draw_textf(font, table_x + 12.0f, y + 21.0f, C_GRID, 0.72f, "-");
     }
   }
+
+  if (selected_host_index >= 0 && selected_host_index < view_count) {
+    const int host_idx = view_indices[selected_host_index];
+    if (host_idx >= 0 && host_idx < (int)raw_host_count) {
+      const LanHostResult *h = &hosts[host_idx];
+      char pbuf[96];
+      format_ports(h, pbuf, sizeof(pbuf));
+      vita2d_draw_rectangle(42.0f, 482.0f, 876.0f, 18.0f, RGBA8(22, 40, 41, 255));
+      draw_textf(font, 48.0f, 496.0f, C_ACCENT, 0.66f, "Focus %s | %s | ports %s | hint %s",
+                 h->ip, h->hostname[0] ? h->hostname : "-", pbuf, h->service_hint[0] ? h->service_hint : "-");
+    }
+  }
 }
 
-static void draw_host_detail_screen(const LanScannerMetrics *scanner, int selected_host_index, vita2d_pgf *font) {
+static void draw_host_detail_screen(const LanScannerMetrics *scanner,
+                                    int selected_host_index,
+                                    const AlertRuleConfig *alert_rules,
+                                    const HostToolsCache *host_tools,
+                                    vita2d_pgf *font) {
   vita2d_draw_rectangle(32.0f, 80.0f, 896.0f, 420.0f, C_PANEL);
   draw_textf(font, 50.0f, 112.0f, C_TEXT, 1.0f, "HOST DETAIL");
   if (scanner->host_count == 0) {
@@ -510,6 +563,172 @@ static void draw_host_detail_screen(const LanScannerMetrics *scanner, int select
   draw_textf(font, 50.0f, 302.0f, h->is_gateway ? C_ACCENT : C_TEXT, 0.9f, "Role: %s",
              h->is_gateway ? "Gateway" : "Host");
   draw_textf(font, 50.0f, 332.0f, C_GRID, 0.84f, "Last error: %d (0x%08X)", h->last_error, (unsigned int)h->last_error);
+  if (alert_rules != NULL) {
+    draw_textf(font, 50.0f, 360.0f, C_GRID, 0.82f, "Whitelisted: %s",
+               alert_rules_is_whitelisted(alert_rules, h->ip) ? "YES" : "NO");
+  }
+  if (host_tools != NULL) {
+    const HostToolResult *t = NULL;
+    for (uint32_t i = 0; i < host_tools->count; i++) {
+      if (strcmp(host_tools->entries[i].ip, h->ip) == 0) {
+        t = &host_tools->entries[i];
+        break;
+      }
+    }
+    if (t != NULL) {
+      draw_textf(font, 50.0f, 388.0f, C_TEXT, 0.80f, "Tools: DNS:%s HTTP:%s HTTPS:%s RTT:%dms",
+                 (t->dns_ok > 0) ? "OK" : (t->dns_ok == 0) ? "NO" : "-",
+                 (t->http_ok > 0) ? "OK" : (t->http_ok == 0) ? "NO" : "-",
+                 (t->https_ok > 0) ? "OK" : (t->https_ok == 0) ? "NO" : "-",
+                 t->rtt_ms);
+    }
+  }
+}
+
+static void draw_host_tools_screen(const LanScannerMetrics *scanner,
+                                   int selected_host_index,
+                                   const HostToolsCache *host_tools,
+                                   int host_tools_selected,
+                                   vita2d_pgf *font) {
+  (void)host_tools_selected;
+  vita2d_draw_rectangle(32.0f, 80.0f, 896.0f, 420.0f, C_PANEL);
+  draw_textf(font, 50.0f, 112.0f, C_TEXT, 1.0f, "HOST TOOLS");
+  if (scanner->host_count == 0) {
+    draw_textf(font, 50.0f, 152.0f, C_WARN, 0.9f, "No host selected.");
+    return;
+  }
+  if (selected_host_index < 0) selected_host_index = 0;
+  if ((uint32_t)selected_host_index >= scanner->host_count) selected_host_index = (int)scanner->host_count - 1;
+  const LanHostResult *h = &scanner->hosts[selected_host_index];
+  draw_textf(font, 50.0f, 154.0f, C_TEXT, 0.9f, "Host: %s (%s)", h->ip, h->hostname[0] ? h->hostname : "-");
+  draw_textf(font, 50.0f, 182.0f, C_GRID, 0.82f, "Manual tests: CROSS DNS | SQUARE HTTP | TRIANGLE HTTPS | SELECT RTT");
+
+  const HostToolResult *t = NULL;
+  for (uint32_t i = 0; i < host_tools->count; i++) {
+    if (strcmp(host_tools->entries[i].ip, h->ip) == 0) {
+      t = &host_tools->entries[i];
+      break;
+    }
+  }
+  if (t == NULL) {
+    draw_textf(font, 50.0f, 236.0f, C_GRID, 0.9f, "No probe result yet.");
+    return;
+  }
+  draw_textf(font, 50.0f, 236.0f, (t->dns_ok > 0) ? C_PRIMARY : C_WARN, 0.88f, "DNS 53: %s",
+             (t->dns_ok > 0) ? "reachable" : (t->dns_ok == 0) ? "no response" : "unknown");
+  draw_textf(font, 50.0f, 268.0f, (t->http_ok > 0) ? C_PRIMARY : C_WARN, 0.88f, "HTTP 80: %s",
+             (t->http_ok > 0) ? "reachable" : (t->http_ok == 0) ? "no response" : "unknown");
+  draw_textf(font, 50.0f, 300.0f, (t->https_ok > 0) ? C_PRIMARY : C_WARN, 0.88f, "HTTPS 443: %s",
+             (t->https_ok > 0) ? "reachable" : (t->https_ok == 0) ? "no response" : "unknown");
+  draw_textf(font, 50.0f, 332.0f, (t->rtt_ms >= 0) ? C_ACCENT : C_WARN, 0.88f, "RTT probe: %d ms", t->rtt_ms);
+  draw_textf(font, 50.0f, 364.0f, C_GRID, 0.82f, "Last error: %d (0x%08X)", t->last_error, (unsigned int)t->last_error);
+}
+
+static void draw_timeline_screen(const ScanHistory *history, int scroll, int selected, vita2d_pgf *font) {
+  vita2d_draw_rectangle(24.0f, 72.0f, 912.0f, 430.0f, C_PANEL);
+  draw_textf(font, 42.0f, 104.0f, C_TEXT, 1.0f, "SCAN TIMELINE");
+  const int score = scan_history_score(history);
+  draw_textf(font, 42.0f, 130.0f, (score >= 75) ? C_PRIMARY : (score >= 55) ? C_ACCENT : C_WARN,
+             0.86f, "Stability score: %d/100", score);
+
+  const float lx = 42.0f;
+  const float ly = 148.0f;
+  const float lw = 430.0f;
+  const float lh = 336.0f;
+  vita2d_draw_rectangle(lx, ly, lw, lh, RGBA8(16, 27, 31, 255));
+  draw_textf(font, lx + 10.0f, ly + 22.0f, C_TEXT, 0.80f, "Rounds (%u)", history->round_count);
+
+  const int rows = 10;
+  for (int i = 0; i < rows; i++) {
+    const int idx = scroll + i;
+    if (idx < 0 || idx >= (int)history->round_count) break;
+    const ScanRoundEntry *r = &history->rounds[idx];
+    const float y = ly + 34.0f + 30.0f * (float)i;
+    const int is_sel = (idx == selected);
+    vita2d_draw_rectangle(lx + 6.0f, y, lw - 12.0f, 28.0f, is_sel ? RGBA8(54, 76, 72, 255) : RGBA8(21, 36, 40, 255));
+    draw_textf(font, lx + 12.0f, y + 20.0f, is_sel ? C_ACCENT : C_TEXT, 0.72f,
+               "#%u hosts:%u +%u -%u ~%u score:%d",
+               r->round, r->host_count, r->added, r->removed, r->changed, r->stability_score);
+  }
+
+  const float rx = 488.0f;
+  const float ry = 148.0f;
+  const float rw = 430.0f;
+  const float rh = 336.0f;
+  vita2d_draw_rectangle(rx, ry, rw, rh, RGBA8(16, 27, 31, 255));
+  draw_textf(font, rx + 10.0f, ry + 22.0f, C_TEXT, 0.80f, "Host activity events (%u)", history->event_count);
+  for (int i = 0; i < 10; i++) {
+    const int idx = (int)history->event_count - 1 - i;
+    if (idx < 0) break;
+    const HostTimelineEvent *e = &history->events[idx];
+    const char *kind = (e->kind == HOST_EVT_JOIN) ? "join" : (e->kind == HOST_EVT_LEAVE) ? "leave" : "change";
+    const unsigned int c = (e->kind == HOST_EVT_JOIN) ? C_PRIMARY : (e->kind == HOST_EVT_LEAVE) ? C_WARN : C_ACCENT;
+    draw_textf(font, rx + 12.0f, ry + 52.0f + 28.0f * (float)i, c, 0.74f, "%s  %s", e->ip, kind);
+  }
+}
+
+static void draw_map_screen(const NetMonitor *monitor,
+                            const LanScannerMetrics *scanner,
+                            int map_selected,
+                            vita2d_pgf *font) {
+  vita2d_draw_rectangle(24.0f, 72.0f, 912.0f, 430.0f, C_PANEL);
+  draw_textf(font, 42.0f, 104.0f, C_TEXT, 1.0f, "NETWORK MAP");
+  draw_textf(font, 42.0f, 130.0f, C_GRID, 0.8f, "Gateway, Vita and known hosts in local topology view");
+
+  const float cx = 310.0f;
+  const float cy = 300.0f;
+  const float ring = 160.0f;
+  vita2d_draw_fill_circle(cx, cy, 16.0f, C_ACCENT);
+  draw_textf(font, cx - 42.0f, cy - 22.0f, C_TEXT, 0.72f, "VITA");
+  draw_textf(font, cx - 90.0f, cy + 34.0f, C_GRID, 0.68f, "%s", monitor->ip_address);
+
+  float gwx = cx;
+  float gwy = cy - 120.0f;
+  vita2d_draw_line(cx, cy, gwx, gwy, C_GRID);
+  vita2d_draw_fill_circle(gwx, gwy, 12.0f, C_PRIMARY);
+  draw_textf(font, gwx - 34.0f, gwy - 18.0f, C_TEXT, 0.68f, "GW");
+  draw_textf(font, gwx - 78.0f, gwy + 26.0f, C_GRID, 0.66f, "%s", monitor->default_route);
+
+  const int count = (scanner->host_count > 20U) ? 20 : (int)scanner->host_count;
+  for (int i = 0; i < count; i++) {
+    const float a = (6.283185f * (float)i) / (float)((count > 0) ? count : 1);
+    const float hx = cx + cosf(a) * ring;
+    const float hy = cy + sinf(a) * (ring * 0.78f);
+    const int selected = (i == map_selected);
+    const unsigned int hc = selected ? C_ACCENT : (scanner->hosts[i].is_gateway ? C_PRIMARY : C_TEXT);
+    vita2d_draw_line(cx, cy, hx, hy, RGBA8(28, 52, 54, 180));
+    vita2d_draw_fill_circle(hx, hy, selected ? 10.0f : 7.0f, hc);
+  }
+
+  if (count > 0 && map_selected >= 0 && map_selected < count) {
+    const LanHostResult *h = &scanner->hosts[map_selected];
+    draw_textf(font, 560.0f, 186.0f, C_TEXT, 0.9f, "Selected host");
+    draw_textf(font, 560.0f, 214.0f, C_TEXT, 0.82f, "IP: %s", h->ip);
+    draw_textf(font, 560.0f, 240.0f, C_TEXT, 0.82f, "Name: %s", h->hostname[0] ? h->hostname : "-");
+    draw_textf(font, 560.0f, 266.0f, C_TEXT, 0.82f, "Role: %s", h->is_gateway ? "Gateway" : "Host");
+    draw_textf(font, 560.0f, 292.0f, C_TEXT, 0.82f, "Ports: %u", h->open_port_count);
+  }
+}
+
+static void draw_rules_screen(const AlertRuleConfig *cfg, int rules_index, vita2d_pgf *font) {
+  if (rules_index < 0) rules_index = 0;
+  if (rules_index > 2) rules_index = 2;
+  vita2d_draw_rectangle(24.0f, 72.0f, 912.0f, 430.0f, C_PANEL);
+  draw_textf(font, 42.0f, 104.0f, C_TEXT, 1.0f, "ALERT RULES");
+  draw_textf(font, 42.0f, 130.0f, C_GRID, 0.8f, "Smart filtering for noisy networks");
+
+  const unsigned int c0 = (rules_index == 0) ? C_ACCENT : C_TEXT;
+  const unsigned int c1 = (rules_index == 1) ? C_ACCENT : C_TEXT;
+  const unsigned int c2 = (rules_index == 2) ? C_ACCENT : C_TEXT;
+  draw_textf(font, 56.0f, 186.0f, c0, 0.9f, "Unknown-only alerts: %s", cfg->unknown_only ? "ON" : "OFF");
+  draw_textf(font, 56.0f, 218.0f, c1, 0.9f, "Sensitive ports only: %s", cfg->sensitive_ports_only ? "ON" : "OFF");
+  draw_textf(font, 56.0f, 250.0f, c2, 0.9f, "Quiet hours: %s (%02u:00-%02u:00)",
+             cfg->quiet_hours_enabled ? "ON" : "OFF", cfg->quiet_start_h, cfg->quiet_end_h);
+  draw_textf(font, 56.0f, 294.0f, C_GRID, 0.8f, "Whitelist count: %u", cfg->whitelist_count);
+  for (uint32_t i = 0; i < cfg->whitelist_count && i < 8U; i++) {
+    draw_textf(font, 80.0f, 322.0f + 22.0f * (float)i, C_TEXT, 0.74f, "- %s %s",
+               cfg->whitelist[i].ip, cfg->whitelist[i].enabled ? "(on)" : "(off)");
+  }
 }
 
 static void draw_settings_screen(vita2d_pgf *font, int settings_index, ScanProfile scan_profile, int audio_enabled) {
@@ -530,7 +749,7 @@ static void draw_settings_screen(vita2d_pgf *font, int settings_index, ScanProfi
   draw_textf(font, 60.0f, 272.0f, c3, 0.9f, "Export snapshot now");
   draw_textf(font, 60.0f, 302.0f, c4, 0.9f, "Open exports viewer");
   draw_textf(font, 60.0f, 320.0f, C_GRID, 0.84f,
-             "Quick: fast/low coverage | Normal: balanced | Deep: slower/max coverage");
+             "Battery: low-power | Balanced: default | Audit: slower/full coverage");
 }
 
 static int export_has_host(const ExportSummary *e, const char *ip) {
@@ -666,7 +885,7 @@ static void draw_alerts_screen(const AlertManager *alerts, int scroll, vita2d_pg
   }
 }
 
-static void draw_bt_screen(const BtMonitorMetrics *bt, vita2d_pgf *font, uint64_t now_us) {
+static void draw_bt_screen(const BtMonitorMetrics *bt, const BtStore *bt_store, vita2d_pgf *font, uint64_t now_us) {
   vita2d_draw_rectangle(24.0f, 72.0f, 912.0f, 430.0f, C_PANEL);
   draw_textf(font, 42.0f, 104.0f, C_TEXT, 1.0f, "BLUETOOTH TOOLS");
 
@@ -699,21 +918,19 @@ static void draw_bt_screen(const BtMonitorMetrics *bt, vita2d_pgf *font, uint64_
   const float right_y = 154.0f;
   const float right_w = 440.0f;
   vita2d_draw_rectangle(right_x, right_y, right_w, box_h, RGBA8(16, 27, 31, 255));
-  draw_textf(font, right_x + 10.0f, right_y + 22.0f, C_TEXT, 0.82f, "Inquiry events (%u)", bt->event_count);
-  if (bt->event_count == 0) {
-    draw_textf(font, right_x + 10.0f, right_y + 58.0f, C_GRID, 0.76f, "No event yet. Start inquiry with TRIANGLE.");
-    return;
-  }
-
-  const int rows = 10;
-  for (int i = 0; i < rows; i++) {
-    const int idx = (int)bt->event_count - 1 - i;
-    if (idx < 0) break;
-    const BtEventEntry *e = &bt->events[idx];
-    const uint64_t age_s = (now_us > e->timestamp_us) ? ((now_us - e->timestamp_us) / 1000000ULL) : 0ULL;
-    const float y = right_y + 52.0f + 28.0f * (float)i;
-    draw_textf(font, right_x + 10.0f, y, C_TEXT, 0.72f, "id:%02u  %s  -%llus",
-               (unsigned int)e->event_id, e->mac, (unsigned long long)age_s);
+  draw_textf(font, right_x + 10.0f, right_y + 22.0f, C_TEXT, 0.82f, "Seen devices (%u)", bt_store->count);
+  if (bt_store->count == 0) {
+    draw_textf(font, right_x + 10.0f, right_y + 58.0f, C_GRID, 0.76f, "No seen device yet. Start inquiry with TRIANGLE.");
+  } else {
+    for (int i = 0; i < 10; i++) {
+      const int idx = (int)bt_store->count - 1 - i;
+      if (idx < 0) break;
+      const BtSeenDevice *d = &bt_store->devices[idx];
+      const uint64_t age_s = (now_us > d->last_seen_us) ? ((now_us - d->last_seen_us) / 1000000ULL) : 0ULL;
+      const float y = right_y + 52.0f + 28.0f * (float)i;
+      draw_textf(font, right_x + 10.0f, y, C_TEXT, 0.72f, "%s %s (%s) -%llus",
+                 d->mac, d->name[0] ? d->name : "-", d->type, (unsigned long long)age_s);
+    }
   }
 }
 
@@ -723,6 +940,11 @@ void render_frame(const NetMonitor *monitor,
                   const ProxyClientMetrics *proxy,
                   const AlertManager *alerts,
                   const BtMonitorMetrics *bt,
+                  const BtStore *bt_store,
+                  const ScanHistory *history,
+                  const HostToolsCache *host_tools,
+                  const AlertRuleConfig *alert_rules,
+                  const UiFxState *ui_fx,
                   ScanDataSource scan_source,
                   const int *scan_view_indices,
                   int scan_view_count,
@@ -731,8 +953,13 @@ void render_frame(const NetMonitor *monitor,
                   int scan_scroll,
                   int selected_host_index,
                   int host_detail_index,
+                  int timeline_scroll,
+                  int timeline_selected,
+                  int map_selected,
+                  int host_tools_selected,
                   int alerts_scroll,
                   int settings_index,
+                  int rules_index,
                   ScanProfile scan_profile,
                   int audio_enabled,
                   const ExportViewer *export_viewer,
@@ -747,20 +974,33 @@ void render_frame(const NetMonitor *monitor,
   vita2d_clear_screen();
 
   vita2d_draw_rectangle(0.0f, 0.0f, (float)SCREEN_W, (float)SCREEN_H, C_BG);
+  draw_fx_background(ui_fx);
   draw_top_nav(font, screen);
+  draw_textf(font, 722.0f, 64.0f, monitor->connected ? C_PRIMARY : C_WARN, 0.62f, "WIFI");
+  draw_textf(font, 772.0f, 64.0f, scanner->running ? C_ACCENT : C_GRID, 0.62f, "SCAN");
+  draw_textf(font, 832.0f, 64.0f, bt->bt_enabled ? C_PRIMARY : C_GRID, 0.62f, "BT");
+  draw_textf(font, 870.0f, 64.0f, (export_viewer->count > 0) ? C_PRIMARY : C_GRID, 0.62f, "EXP");
   if (screen == APP_SCREEN_STATS) {
     draw_stats_screen(monitor, latency, font, now_us);
   } else if (screen == APP_SCREEN_SCAN) {
     draw_scan_screen(scanner, proxy, scan_source, scan_view_indices, scan_view_count,
                      scan_filter, scan_sort, scan_scroll, selected_host_index, font);
   } else if (screen == APP_SCREEN_HOST_DETAIL) {
-    draw_host_detail_screen(scanner, host_detail_index, font);
+    draw_host_detail_screen(scanner, host_detail_index, alert_rules, host_tools, font);
+  } else if (screen == APP_SCREEN_HOST_TOOLS) {
+    draw_host_tools_screen(scanner, host_detail_index, host_tools, host_tools_selected, font);
+  } else if (screen == APP_SCREEN_TIMELINE) {
+    draw_timeline_screen(history, timeline_scroll, timeline_selected, font);
+  } else if (screen == APP_SCREEN_MAP) {
+    draw_map_screen(monitor, scanner, map_selected, font);
   } else if (screen == APP_SCREEN_ALERTS) {
     draw_alerts_screen(alerts, alerts_scroll, font, now_us);
+  } else if (screen == APP_SCREEN_RULES) {
+    draw_rules_screen(alert_rules, rules_index, font);
   } else if (screen == APP_SCREEN_SETTINGS) {
     draw_settings_screen(font, settings_index, scan_profile, audio_enabled);
   } else if (screen == APP_SCREEN_BT) {
-    draw_bt_screen(bt, font, now_us);
+    draw_bt_screen(bt, bt_store, font, now_us);
   } else if (screen == APP_SCREEN_EXPORTS) {
     draw_exports_screen(export_viewer, exports_scroll, exports_selected, exports_compare_index, font);
   } else {
