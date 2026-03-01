@@ -246,7 +246,7 @@ int main(void) {
   int prev_scan_error = 0;
   uint32_t prev_host_count = 0;
   char prev_hosts[LAN_SCANNER_MAX_HOSTS][16];
-  bool local_scan_armed = true;
+  bool local_scan_armed = false;
   unsigned int prev_buttons = 0;
   bool running = true;
 
