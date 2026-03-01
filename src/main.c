@@ -294,6 +294,7 @@ int main(void) {
       (void)export_viewer_reload(&export_viewer);
       exports_scroll = 0;
       exports_selected = 0;
+      exports_compare_index = -1;
     }
     if (screen != prev_screen) {
       ui_audio_event(&ui_audio, UI_AUDIO_NAV);
@@ -527,11 +528,27 @@ int main(void) {
           ui_audio_event(&ui_audio, UI_AUDIO_EXPORT_FAIL);
         }
       }
+      if (pressed & SCE_CTRL_CROSS) {
+        if (export_viewer.count > 0) {
+          exports_compare_index = exports_selected;
+          alerts_push(&alerts, now, ALERT_INFO, "Pinned baseline: %s",
+                      export_viewer.exports[exports_compare_index].label);
+          ui_audio_event(&ui_audio, UI_AUDIO_NAV);
+        }
+      }
+      if (pressed & SCE_CTRL_CIRCLE) {
+        if (exports_compare_index >= 0) {
+          exports_compare_index = -1;
+          alerts_push(&alerts, now, ALERT_INFO, "Baseline cleared");
+          ui_audio_event(&ui_audio, UI_AUDIO_NAV);
+        }
+      }
       if (exports_selected < 0) exports_selected = 0;
       if (exports_selected >= (int)export_viewer.count) exports_selected = (int)export_viewer.count - 1;
       if (exports_selected < 0) exports_selected = 0;
       if (exports_scroll < 0) exports_scroll = 0;
       if (exports_scroll > max_scroll) exports_scroll = max_scroll;
+      if (exports_compare_index >= (int)export_viewer.count) exports_compare_index = -1;
     } else if (screen == APP_SCREEN_HOST_DETAIL) {
       if (pressed & SCE_CTRL_CIRCLE) {
         screen = APP_SCREEN_SCAN;

@@ -49,15 +49,23 @@ static void parse_json_summary(const char *buf, ExportSummary *out) {
   }
 
   const char *cursor = buf;
-  while ((cursor = strstr(cursor, "\"ip\":\"")) != NULL && out->preview_count < EXPORT_VIEWER_HOST_PREVIEW) {
+  while ((cursor = strstr(cursor, "\"ip\":\"")) != NULL) {
     cursor += 6;
     const char *end = strchr(cursor, '\"');
     if (end == NULL) break;
     size_t n = (size_t)(end - cursor);
-    if (n >= sizeof(out->preview_hosts[0])) n = sizeof(out->preview_hosts[0]) - 1;
-    memcpy(out->preview_hosts[out->preview_count], cursor, n);
-    out->preview_hosts[out->preview_count][n] = '\0';
-    out->preview_count++;
+    if (out->all_host_count < LAN_SCANNER_MAX_HOSTS) {
+      if (n >= sizeof(out->all_hosts[0])) n = sizeof(out->all_hosts[0]) - 1;
+      memcpy(out->all_hosts[out->all_host_count], cursor, n);
+      out->all_hosts[out->all_host_count][n] = '\0';
+      out->all_host_count++;
+      if (out->preview_count < EXPORT_VIEWER_HOST_PREVIEW) {
+        memcpy(out->preview_hosts[out->preview_count],
+               out->all_hosts[out->all_host_count - 1],
+               sizeof(out->preview_hosts[out->preview_count]));
+        out->preview_count++;
+      }
+    }
     cursor = end + 1;
   }
 }
@@ -99,5 +107,15 @@ int export_viewer_reload(ExportViewer *viewer) {
     memset(&ent, 0, sizeof(ent));
   }
   sceIoDclose(dfd);
+
+  for (uint32_t i = 1; i < viewer->count; i++) {
+    ExportSummary key = viewer->exports[i];
+    int j = (int)i - 1;
+    while (j >= 0 && viewer->exports[j].timestamp_us < key.timestamp_us) {
+      viewer->exports[j + 1] = viewer->exports[j];
+      j--;
+    }
+    viewer->exports[j + 1] = key;
+  }
   return 0;
 }

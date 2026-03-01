@@ -210,7 +210,7 @@ static void draw_nav_hint(vita2d_pgf *font, AppScreen screen) {
   }
   if (screen == APP_SCREEN_EXPORTS) {
     draw_text_centered(font, 525.0f, C_GRID, 0.75f,
-                       "L/R:view  UP/DOWN:select  LEFT/RIGHT:scroll  TRIANGLE:export  START:quit");
+                       "L/R:view  UP/DOWN:select  LEFT/RIGHT:scroll  CROSS:pin base  CIRCLE:clear  TRIANGLE:export");
     return;
   }
   if (screen == APP_SCREEN_SETTINGS) {
@@ -527,7 +527,20 @@ static void draw_settings_screen(vita2d_pgf *font, int settings_index, ScanProfi
              "Quick: fast/low coverage | Normal: balanced | Deep: slower/max coverage");
 }
 
-static void draw_exports_screen(const ExportViewer *viewer, int exports_scroll, int exports_selected, vita2d_pgf *font) {
+static int export_has_host(const ExportSummary *e, const char *ip) {
+  for (uint32_t i = 0; i < e->all_host_count; i++) {
+    if (strcmp(e->all_hosts[i], ip) == 0) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+static void draw_exports_screen(const ExportViewer *viewer,
+                                int exports_scroll,
+                                int exports_selected,
+                                int exports_compare_index,
+                                vita2d_pgf *font) {
   vita2d_draw_rectangle(24.0f, 72.0f, 912.0f, 430.0f, C_PANEL);
   draw_textf(font, 42.0f, 104.0f, C_TEXT, 1.0f, "EXPORTS");
   draw_textf(font, 42.0f, 128.0f, C_GRID, 0.78f, "UP/DOWN:select  LEFT/RIGHT:scroll  CROSS:view detail");
@@ -569,7 +582,53 @@ static void draw_exports_screen(const ExportViewer *viewer, int exports_scroll, 
   draw_textf(font, right_x + 10.0f, right_y + 110.0f, C_TEXT, 0.82f, "Host count: %u", e->host_count);
   draw_textf(font, right_x + 10.0f, right_y + 138.0f, C_GRID, 0.8f, "Preview hosts:");
   for (uint32_t i = 0; i < e->preview_count && i < EXPORT_VIEWER_HOST_PREVIEW; i++) {
-    draw_textf(font, right_x + 24.0f, right_y + 166.0f + 24.0f * (float)i, C_TEXT, 0.78f, "- %s", e->preview_hosts[i]);
+    draw_textf(font, right_x + 24.0f, right_y + 166.0f + 22.0f * (float)i, C_TEXT, 0.76f, "- %s", e->preview_hosts[i]);
+  }
+
+  const int baseline_ok = (exports_compare_index >= 0 &&
+                           exports_compare_index < (int)viewer->count &&
+                           exports_compare_index != exports_selected);
+  if (!baseline_ok) {
+    draw_textf(font, right_x + 10.0f, right_y + 274.0f, C_GRID, 0.76f,
+               "Baseline: none (CROSS to pin selected as baseline)");
+    return;
+  }
+
+  const ExportSummary *base = &viewer->exports[exports_compare_index];
+  int added = 0;
+  int removed = 0;
+  char added_ips[4][16];
+  char removed_ips[4][16];
+  int added_preview = 0;
+  int removed_preview = 0;
+
+  for (uint32_t i = 0; i < e->all_host_count; i++) {
+    if (!export_has_host(base, e->all_hosts[i])) {
+      added++;
+      if (added_preview < 4) {
+        snprintf(added_ips[added_preview], sizeof(added_ips[added_preview]), "%s", e->all_hosts[i]);
+        added_preview++;
+      }
+    }
+  }
+  for (uint32_t i = 0; i < base->all_host_count; i++) {
+    if (!export_has_host(e, base->all_hosts[i])) {
+      removed++;
+      if (removed_preview < 4) {
+        snprintf(removed_ips[removed_preview], sizeof(removed_ips[removed_preview]), "%s", base->all_hosts[i]);
+        removed_preview++;
+      }
+    }
+  }
+
+  draw_textf(font, right_x + 10.0f, right_y + 274.0f, C_ACCENT, 0.78f, "Delta vs baseline: %s", base->label);
+  draw_textf(font, right_x + 10.0f, right_y + 296.0f, C_PRIMARY, 0.78f, "Added: %d", added);
+  draw_textf(font, right_x + 140.0f, right_y + 296.0f, C_WARN, 0.78f, "Removed: %d", removed);
+  for (int i = 0; i < added_preview; i++) {
+    draw_textf(font, right_x + 10.0f + 116.0f * (float)i, right_y + 318.0f, C_PRIMARY, 0.72f, "+%s", added_ips[i]);
+  }
+  for (int i = 0; i < removed_preview; i++) {
+    draw_textf(font, right_x + 10.0f + 116.0f * (float)i, right_y + 338.0f, C_WARN, 0.72f, "-%s", removed_ips[i]);
   }
 }
 
@@ -643,7 +702,7 @@ void render_frame(const NetMonitor *monitor,
   } else if (screen == APP_SCREEN_SETTINGS) {
     draw_settings_screen(font, settings_index, scan_profile, audio_enabled);
   } else if (screen == APP_SCREEN_EXPORTS) {
-    draw_exports_screen(export_viewer, exports_scroll, exports_selected, font);
+    draw_exports_screen(export_viewer, exports_scroll, exports_selected, exports_compare_index, font);
   } else {
     draw_radar(monitor, now_us);
     draw_oscilloscope(monitor);
