@@ -117,14 +117,14 @@ static void apply_scan_profile(LanScannerConfig *cfg, ScanProfile profile) {
   lan_scanner_default_config(cfg);
   if (profile == SCAN_PROFILE_QUICK) {
     cfg->interval_ms_per_host = 12;
-    cfg->connect_timeout_ms = 70;
+    cfg->connect_timeout_ms = 220;
     cfg->ports[0] = 53;
     cfg->ports[1] = 80;
     cfg->ports[2] = 443;
     cfg->ports[3] = 445;
   } else if (profile == SCAN_PROFILE_DEEP) {
     cfg->interval_ms_per_host = 30;
-    cfg->connect_timeout_ms = 180;
+    cfg->connect_timeout_ms = 700;
     cfg->ports[0] = 22;
     cfg->ports[1] = 23;
     cfg->ports[2] = 53;

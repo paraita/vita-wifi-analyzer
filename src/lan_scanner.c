@@ -2,6 +2,8 @@
 
 #include <psp2/net/net.h>
 #include <psp2/net/netctl.h>
+#include <psp2/kernel/processmgr.h>
+#include <psp2/kernel/threadmgr.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -52,7 +54,6 @@ static int resolve_local_subnet(char *prefix_out, size_t prefix_len, char *cidr_
 
 static ProbeResult probe_tcp_port(const char *ip, uint16_t port, uint32_t timeout_ms, int *err_out) {
   int sock = -1;
-  int ep = -1;
   ProbeResult result = PROBE_NO_RESPONSE;
 
   SceNetSockaddrIn addr;
@@ -91,50 +92,46 @@ static ProbeResult probe_tcp_port(const char *ip, uint16_t port, uint32_t timeou
     }
   }
 
-  ep = sceNetEpollCreate("lan_scan_ep", 0);
-  if (ep < 0) {
-    *err_out = -*sceNetErrnoLoc();
-    goto cleanup;
-  }
+  const uint64_t deadline_us = sceKernelGetProcessTimeWide() + ((uint64_t)timeout_ms * 1000ULL);
+  for (;;) {
+    int so_error = 0;
+    unsigned int so_len = sizeof(so_error);
+    if (sceNetGetsockopt(sock, SCE_NET_SOL_SOCKET, SCE_NET_SO_ERROR, &so_error, &so_len) < 0) {
+      *err_out = -*sceNetErrnoLoc();
+      goto cleanup;
+    }
 
-  SceNetEpollEvent add_ev;
-  memset(&add_ev, 0, sizeof(add_ev));
-  add_ev.events = SCE_NET_EPOLLOUT | SCE_NET_EPOLLERR | SCE_NET_EPOLLHUP;
-  add_ev.data.fd = sock;
-  if (sceNetEpollControl(ep, SCE_NET_EPOLL_CTL_ADD, sock, &add_ev) < 0) {
-    *err_out = -*sceNetErrnoLoc();
-    goto cleanup;
-  }
+    if (so_error == 0) {
+      SceNetSockaddrIn peer;
+      unsigned int peer_len = sizeof(peer);
+      const int peer_rc = sceNetGetpeername(sock, (SceNetSockaddr *)&peer, &peer_len);
+      if (peer_rc == 0) {
+        *err_out = 0;
+        result = PROBE_OPEN;
+        break;
+      }
+      const int peer_err = *sceNetErrnoLoc();
+      if (peer_err != SCE_NET_ENOTCONN && peer_err != SCE_NET_EINPROGRESS) {
+        *err_out = -peer_err;
+        break;
+      }
+    } else if (so_error == SCE_NET_ECONNREFUSED) {
+      *err_out = -so_error;
+      result = PROBE_HOST_RESPONDED;
+      break;
+    } else if (so_error != SCE_NET_EINPROGRESS && so_error != SCE_NET_EALREADY) {
+      *err_out = -so_error;
+      break;
+    }
 
-  SceNetEpollEvent event;
-  memset(&event, 0, sizeof(event));
-  rc = sceNetEpollWait(ep, &event, 1, (int)timeout_ms);
-  if (rc <= 0) {
-    *err_out = -SCE_NET_ETIMEDOUT;
-    goto cleanup;
-  }
-
-  int so_error = 0;
-  unsigned int so_len = sizeof(so_error);
-  if (sceNetGetsockopt(sock, SCE_NET_SOL_SOCKET, SCE_NET_SO_ERROR, &so_error, &so_len) < 0) {
-    *err_out = -*sceNetErrnoLoc();
-    goto cleanup;
-  }
-
-  if (so_error == 0) {
-    *err_out = 0;
-    result = PROBE_OPEN;
-  } else if (so_error == SCE_NET_ECONNREFUSED) {
-    *err_out = -so_error;
-    result = PROBE_HOST_RESPONDED;
-  } else {
-    *err_out = -so_error;
+    if (sceKernelGetProcessTimeWide() >= deadline_us) {
+      *err_out = -SCE_NET_ETIMEDOUT;
+      break;
+    }
+    sceKernelDelayThread(1000);
   }
 
 cleanup:
-  if (ep >= 0) {
-    sceNetEpollDestroy(ep);
-  }
   if (sock >= 0) {
     sceNetSocketClose(sock);
   }
@@ -430,7 +427,7 @@ static int select_next_host(LanScanner *scanner) {
 void lan_scanner_default_config(LanScannerConfig *cfg) {
   memset(cfg, 0, sizeof(*cfg));
   cfg->interval_ms_per_host = 25;
-  cfg->connect_timeout_ms = 120;
+  cfg->connect_timeout_ms = 350;
   cfg->ports[0] = 22;
   cfg->ports[1] = 23;
   cfg->ports[2] = 53;
