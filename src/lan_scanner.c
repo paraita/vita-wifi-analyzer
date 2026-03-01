@@ -9,7 +9,8 @@
 #include <string.h>
 
 enum {
-  STEP_INTERVAL_US = 20000
+  STEP_INTERVAL_US = 20000,
+  UI_PROBE_BUDGET_MS = 14
 };
 
 typedef struct IcmpEchoPacket {
@@ -549,6 +550,9 @@ void lan_scanner_set_gateway_hint(LanScanner *scanner, const char *gateway_ip) {
 void lan_scanner_tick(LanScanner *scanner, uint64_t now_us) {
   static const uint16_t alive_ports[] = {53, 80, 443, 445, 139, 22, 8080, 62078, 554, 8009};
   const uint8_t alive_steps = (uint8_t)(1 + (sizeof(alive_ports) / sizeof(alive_ports[0])));
+  const uint32_t step_timeout_ms = (scanner->config.connect_timeout_ms > UI_PROBE_BUDGET_MS)
+                                     ? UI_PROBE_BUDGET_MS
+                                     : scanner->config.connect_timeout_ms;
 
   if (!scanner->running) {
     return;
@@ -635,7 +639,7 @@ void lan_scanner_tick(LanScanner *scanner, uint64_t now_us) {
 
     if (scanner->alive_probe_index == 0U) {
       if (scanner->icmp_supported != 0) {
-        pr = probe_icmp_echo(scanner->current_ip, scanner->config.connect_timeout_ms, &probe_err);
+        pr = probe_icmp_echo(scanner->current_ip, step_timeout_ms, &probe_err);
         if (probe_err == -SCE_NET_EPROTONOSUPPORT || probe_err == -SCE_NET_EPERM) {
           scanner->icmp_supported = 0;
         } else if (probe_err == 0 || probe_err == -SCE_NET_ETIMEDOUT) {
@@ -644,7 +648,7 @@ void lan_scanner_tick(LanScanner *scanner, uint64_t now_us) {
       }
     } else {
       const uint16_t port = alive_ports[scanner->alive_probe_index - 1U];
-      pr = probe_tcp_port(scanner->current_ip, port, scanner->config.connect_timeout_ms, &probe_err);
+      pr = probe_tcp_port(scanner->current_ip, port, step_timeout_ms, &probe_err);
     }
 
     if (probe_err != -SCE_NET_ETIMEDOUT) {
@@ -675,7 +679,7 @@ void lan_scanner_tick(LanScanner *scanner, uint64_t now_us) {
     if (scanner->port_probe_index < LAN_SCANNER_PORT_COUNT) {
       int probe_err = 0;
       const uint16_t port = scanner->config.ports[scanner->port_probe_index];
-      const ProbeResult pr = probe_tcp_port(scanner->current_ip, port, scanner->config.connect_timeout_ms, &probe_err);
+      const ProbeResult pr = probe_tcp_port(scanner->current_ip, port, step_timeout_ms, &probe_err);
       if (probe_err != -SCE_NET_ETIMEDOUT) {
         scanner->last_error = probe_err;
       }
