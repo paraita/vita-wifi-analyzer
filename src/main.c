@@ -271,6 +271,8 @@ int main(void) {
   bool local_scan_armed = true;
   unsigned int prev_buttons = 0;
   bool running = true;
+  BtMonitorMetrics bt_metrics;
+  memset(&bt_metrics, 0, sizeof(bt_metrics));
 
   while (running) {
     const uint64_t now = sceKernelGetProcessTimeWide();
@@ -314,11 +316,12 @@ int main(void) {
 
     ProxyClientMetrics proxy_metrics;
     proxy_client_get_metrics(&proxy, &proxy_metrics);
-    bt_monitor_poll(&bt_monitor, now);
-    BtMonitorMetrics bt_metrics;
-    bt_monitor_get_metrics(&bt_monitor, &bt_metrics);
-    bt_store_update(&g_bt_store, &bt_metrics, now);
-    (void)bt_store_save(&g_bt_store, now);
+    if (screen == APP_SCREEN_BT) {
+      bt_monitor_poll(&bt_monitor, now);
+      bt_monitor_get_metrics(&bt_monitor, &bt_metrics);
+      bt_store_update(&g_bt_store, &bt_metrics, now);
+      (void)bt_store_save(&g_bt_store, now);
+    }
     scan_history_update(&g_scan_history, &scanner_metrics, now);
 
     if (screen != prev_screen && screen == APP_SCREEN_EXPORTS) {
@@ -607,6 +610,7 @@ int main(void) {
       }
       if (pressed & SCE_CTRL_SELECT) {
         bt_monitor_poll(&bt_monitor, now);
+        bt_monitor_get_metrics(&bt_monitor, &bt_metrics);
       }
     } else if (screen == APP_SCREEN_EXPORTS) {
       const int max_scroll = (export_viewer.count > 10U) ? (int)(export_viewer.count - 10U) : 0;
