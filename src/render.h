@@ -8,11 +8,6 @@
 #include "alerts.h"
 #include "export_viewer.h"
 #include "bt_monitor.h"
-#include "host_tools.h"
-#include "scan_history.h"
-#include "alert_rules.h"
-#include "bt_store.h"
-#include "ui_fx.h"
 #include <vita2d.h>
 
 typedef enum AppScreen {
@@ -20,15 +15,11 @@ typedef enum AppScreen {
   APP_SCREEN_STATS = 1,
   APP_SCREEN_SCAN = 2,
   APP_SCREEN_HOST_DETAIL = 3,
-  APP_SCREEN_HOST_TOOLS = 4,
-  APP_SCREEN_TIMELINE = 5,
-  APP_SCREEN_MAP = 6,
-  APP_SCREEN_ALERTS = 7,
-  APP_SCREEN_RULES = 8,
-  APP_SCREEN_SETTINGS = 9,
-  APP_SCREEN_BT = 10,
-  APP_SCREEN_EXPORTS = 11,
-  APP_SCREEN_COUNT = 12
+  APP_SCREEN_ALERTS = 4,
+  APP_SCREEN_SETTINGS = 5,
+  APP_SCREEN_BT = 6,
+  APP_SCREEN_EXPORTS = 7,
+  APP_SCREEN_COUNT = 8
 } AppScreen;
 
 typedef enum ScanDataSource {
@@ -62,11 +53,6 @@ void render_frame(const NetMonitor *monitor,
                   const ProxyClientMetrics *proxy,
                   const AlertManager *alerts,
                   const BtMonitorMetrics *bt,
-                  const BtStore *bt_store,
-                  const ScanHistory *history,
-                  const HostToolsCache *host_tools,
-                  const AlertRuleConfig *alert_rules,
-                  const UiFxState *ui_fx,
                   ScanDataSource scan_source,
                   const int *scan_view_indices,
                   int scan_view_count,
@@ -75,13 +61,8 @@ void render_frame(const NetMonitor *monitor,
                   int scan_scroll,
                   int selected_host_index,
                   int host_detail_index,
-                  int timeline_scroll,
-                  int timeline_selected,
-                  int map_selected,
-                  int host_tools_selected,
                   int alerts_scroll,
                   int settings_index,
-                  int rules_index,
                   ScanProfile scan_profile,
                   int audio_enabled,
                   const ExportViewer *export_viewer,

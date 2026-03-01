@@ -14,7 +14,7 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 
 set(VITA_APP_NAME "Vita Wi-Fi Scope")
 set(VITA_TITLEID  "VWSC00001")
-set(VITA_VERSION  "01.52")
+set(VITA_VERSION  "01.42")
 
 add_executable(${PROJECT_NAME}
   src/main.c
@@ -25,11 +25,6 @@ add_executable(${PROJECT_NAME}
   src/export_json.c
   src/export_viewer.c
   src/ui_audio.c
-  src/host_tools.c
-  src/scan_history.c
-  src/alert_rules.c
-  src/bt_store.c
-  src/ui_fx.c
   src/proxy_client.c
   src/net_monitor.c
   src/bt_monitor.c

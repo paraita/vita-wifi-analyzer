@@ -8,11 +8,6 @@
 #include "export_viewer.h"
 #include "ui_audio.h"
 #include "bt_monitor.h"
-#include "host_tools.h"
-#include "scan_history.h"
-#include "alert_rules.h"
-#include "bt_store.h"
-#include "ui_fx.h"
 
 #include <psp2/ctrl.h>
 #include <psp2/kernel/processmgr.h>
@@ -35,14 +30,6 @@ typedef struct ScanView {
   int indices[LAN_SCANNER_MAX_HOSTS];
   int count;
 } ScanView;
-
-static ScanView g_scan_view;
-static BtStore g_bt_store;
-static HostToolsCache g_host_tools;
-static ScanHistory g_scan_history;
-static AlertRuleConfig g_alert_rules;
-static UiFxState g_ui_fx;
-static char g_prev_hosts[LAN_SCANNER_MAX_HOSTS][16];
 
 static int parse_ipv4(const char *ip, int out[4]) {
   if (sscanf(ip, "%d.%d.%d.%d", &out[0], &out[1], &out[2], &out[3]) == 4) {
@@ -230,12 +217,6 @@ int main(void) {
   proxy_client_init(&proxy);
   BtMonitor bt_monitor;
   bt_monitor_init(&bt_monitor);
-  bt_store_init(&g_bt_store);
-  (void)bt_store_load(&g_bt_store);
-  host_tools_init(&g_host_tools);
-  scan_history_init(&g_scan_history);
-  alert_rules_init(&g_alert_rules);
-  ui_fx_init(&g_ui_fx, APP_SCREEN_RADAR);
   AlertManager alerts;
   alerts_init(&alerts);
   ExportViewer export_viewer;
@@ -249,17 +230,13 @@ int main(void) {
   ScanDataSource scan_source = SCAN_SOURCE_LOCAL;
   ScanFilterMode scan_filter = SCAN_FILTER_ALL;
   ScanSortMode scan_sort = SCAN_SORT_IP;
-  g_scan_view.count = 0;
+  ScanView scan_view;
+  scan_view.count = 0;
   int scan_scroll = 0;
   int selected_host_index = 0;
   int host_detail_index = 0;
-  int timeline_scroll = 0;
-  int timeline_selected = 0;
-  int map_selected = 0;
-  int host_tools_selected = 0;
   int alerts_scroll = 0;
   int settings_index = 0;
-  int rules_index = 0;
   ScanProfile scan_profile = SCAN_PROFILE_NORMAL;
   int exports_scroll = 0;
   int exports_selected = 0;
@@ -268,15 +245,13 @@ int main(void) {
   uint32_t prev_scan_round = 0;
   int prev_scan_error = 0;
   uint32_t prev_host_count = 0;
+  char prev_hosts[LAN_SCANNER_MAX_HOSTS][16];
   bool local_scan_armed = true;
   unsigned int prev_buttons = 0;
   bool running = true;
-  BtMonitorMetrics bt_metrics;
-  memset(&bt_metrics, 0, sizeof(bt_metrics));
 
   while (running) {
     const uint64_t now = sceKernelGetProcessTimeWide();
-    ui_fx_tick(&g_ui_fx, now);
     if (now >= next_poll) {
       net_monitor_poll(&monitor, now);
       lan_scanner_set_ip_hint(&scanner, monitor.ip_address);
@@ -316,13 +291,9 @@ int main(void) {
 
     ProxyClientMetrics proxy_metrics;
     proxy_client_get_metrics(&proxy, &proxy_metrics);
-    if (screen == APP_SCREEN_BT) {
-      bt_monitor_poll(&bt_monitor, now);
-      bt_monitor_get_metrics(&bt_monitor, &bt_metrics);
-      bt_store_update(&g_bt_store, &bt_metrics, now);
-      (void)bt_store_save(&g_bt_store, now);
-    }
-    scan_history_update(&g_scan_history, &scanner_metrics, now);
+    bt_monitor_poll(&bt_monitor, now);
+    BtMonitorMetrics bt_metrics;
+    bt_monitor_get_metrics(&bt_monitor, &bt_metrics);
 
     if (screen != prev_screen && screen == APP_SCREEN_EXPORTS) {
       (void)export_json_rebuild_index();
@@ -333,7 +304,6 @@ int main(void) {
     }
     if (screen != prev_screen) {
       ui_audio_event(&ui_audio, UI_AUDIO_NAV);
-      ui_fx_on_screen_change(&g_ui_fx, prev_screen, screen, now);
     }
     prev_screen = screen;
 
@@ -343,45 +313,32 @@ int main(void) {
         const char *ip = scanner_metrics.hosts[i].ip;
         int existed = 0;
         for (uint32_t j = 0; j < prev_host_count; j++) {
-          if (strcmp(g_prev_hosts[j], ip) == 0) {
+          if (strcmp(prev_hosts[j], ip) == 0) {
             existed = 1;
             break;
           }
         }
         if (!existed) {
-          const int unknown = (scanner_metrics.hosts[i].hostname[0] == '\0');
-          int sensitive = 0;
-          for (uint8_t p = 0; p < scanner_metrics.hosts[i].open_port_count; p++) {
-            const uint16_t port = scanner_metrics.hosts[i].open_ports[p];
-            if (port == 22 || port == 23 || port == 445 || port == 8080) {
-              sensitive = 1;
-              break;
-            }
-          }
-          if (alert_rules_allow(&g_alert_rules, ip, unknown, sensitive, now)) {
-            alerts_push(&alerts, now, ALERT_INFO, "Host joined: %s", ip);
-          }
+          alerts_push(&alerts, now, ALERT_INFO, "Host joined: %s", ip);
           joined_count++;
         }
       }
       for (uint32_t j = 0; j < prev_host_count; j++) {
         int still_exists = 0;
         for (uint32_t i = 0; i < scanner_metrics.host_count; i++) {
-          if (strcmp(g_prev_hosts[j], scanner_metrics.hosts[i].ip) == 0) {
+          if (strcmp(prev_hosts[j], scanner_metrics.hosts[i].ip) == 0) {
             still_exists = 1;
             break;
           }
         }
         if (!still_exists) {
-          if (alert_rules_allow(&g_alert_rules, g_prev_hosts[j], 1, 0, now)) {
-            alerts_push(&alerts, now, ALERT_WARN, "Host left: %s", g_prev_hosts[j]);
-          }
+          alerts_push(&alerts, now, ALERT_WARN, "Host left: %s", prev_hosts[j]);
         }
       }
       prev_host_count = scanner_metrics.host_count;
       if (prev_host_count > LAN_SCANNER_MAX_HOSTS) prev_host_count = LAN_SCANNER_MAX_HOSTS;
       for (uint32_t i = 0; i < prev_host_count; i++) {
-        snprintf(g_prev_hosts[i], sizeof(g_prev_hosts[i]), "%s", scanner_metrics.hosts[i].ip);
+        snprintf(prev_hosts[i], sizeof(prev_hosts[i]), "%s", scanner_metrics.hosts[i].ip);
       }
       prev_scan_round = scanner_metrics.scan_round;
       if (joined_count > 0) {
@@ -406,12 +363,12 @@ int main(void) {
       scan_source = SCAN_SOURCE_LOCAL;
 
       if (scan_source == SCAN_SOURCE_PROXY) {
-        build_scan_view(proxy_metrics.hosts, proxy_metrics.host_count, scan_filter, scan_sort, &g_scan_view);
+        build_scan_view(proxy_metrics.hosts, proxy_metrics.host_count, scan_filter, scan_sort, &scan_view);
       } else {
-        build_scan_view(scanner_metrics.hosts, scanner_metrics.host_count, scan_filter, scan_sort, &g_scan_view);
+        build_scan_view(scanner_metrics.hosts, scanner_metrics.host_count, scan_filter, scan_sort, &scan_view);
       }
 
-      const uint32_t host_count = (uint32_t)g_scan_view.count;
+      const uint32_t host_count = (uint32_t)scan_view.count;
       const int rows_visible = 8;
       const int max_scroll = (host_count > (uint32_t)rows_visible)
                                ? (int)(host_count - (uint32_t)rows_visible)
@@ -493,7 +450,7 @@ int main(void) {
       }
       if (pressed & SCE_CTRL_CROSS) {
         if (host_count > 0 && selected_host_index >= 0 && selected_host_index < (int)host_count) {
-          host_detail_index = g_scan_view.indices[selected_host_index];
+          host_detail_index = scan_view.indices[selected_host_index];
           screen = APP_SCREEN_HOST_DETAIL;
         }
       }
@@ -511,52 +468,6 @@ int main(void) {
       }
       if (alerts_scroll < 0) alerts_scroll = 0;
       if (alerts_scroll > max_scroll) alerts_scroll = max_scroll;
-    } else if (screen == APP_SCREEN_HOST_TOOLS) {
-      if (scanner_metrics.host_count > 0) {
-        const LanHostResult *h = &scanner_metrics.hosts[host_detail_index];
-        if (pressed & SCE_CTRL_CROSS) {
-          (void)host_tools_run_test(&g_host_tools, h->ip, HOST_TOOL_DNS, 300, now);
-        }
-        if (pressed & SCE_CTRL_SQUARE) {
-          (void)host_tools_run_test(&g_host_tools, h->ip, HOST_TOOL_HTTP, 320, now);
-        }
-        if (pressed & SCE_CTRL_TRIANGLE) {
-          (void)host_tools_run_test(&g_host_tools, h->ip, HOST_TOOL_HTTPS, 380, now);
-        }
-        if (pressed & SCE_CTRL_SELECT) {
-          (void)host_tools_run_test(&g_host_tools, h->ip, HOST_TOOL_RTT, 420, now);
-        }
-      }
-      if (pressed & SCE_CTRL_CIRCLE) {
-        screen = APP_SCREEN_HOST_DETAIL;
-      }
-    } else if (screen == APP_SCREEN_TIMELINE) {
-      const int max_scroll = (g_scan_history.round_count > 10U) ? (int)(g_scan_history.round_count - 10U) : 0;
-      if (pressed & SCE_CTRL_UP) timeline_selected--;
-      if (pressed & SCE_CTRL_DOWN) timeline_selected++;
-      if (timeline_selected < 0) timeline_selected = 0;
-      if (timeline_selected >= (int)g_scan_history.round_count) timeline_selected = (int)g_scan_history.round_count - 1;
-      if (timeline_selected < 0) timeline_selected = 0;
-      if (timeline_selected < timeline_scroll) timeline_scroll = timeline_selected;
-      if (timeline_selected > timeline_scroll + 9) timeline_scroll = timeline_selected - 9;
-      if (timeline_scroll < 0) timeline_scroll = 0;
-      if (timeline_scroll > max_scroll) timeline_scroll = max_scroll;
-    } else if (screen == APP_SCREEN_MAP) {
-      const int max_sel = (scanner_metrics.host_count > 0U) ? (int)scanner_metrics.host_count - 1 : 0;
-      if (pressed & SCE_CTRL_UP) map_selected--;
-      if (pressed & SCE_CTRL_DOWN) map_selected++;
-      if (map_selected < 0) map_selected = 0;
-      if (map_selected > max_sel) map_selected = max_sel;
-    } else if (screen == APP_SCREEN_RULES) {
-      if (pressed & SCE_CTRL_UP) rules_index--;
-      if (pressed & SCE_CTRL_DOWN) rules_index++;
-      if (rules_index < 0) rules_index = 0;
-      if (rules_index > 2) rules_index = 2;
-      if (pressed & SCE_CTRL_CROSS) {
-        if (rules_index == 0) g_alert_rules.unknown_only = (uint8_t)!g_alert_rules.unknown_only;
-        if (rules_index == 1) g_alert_rules.sensitive_ports_only = (uint8_t)!g_alert_rules.sensitive_ports_only;
-        if (rules_index == 2) g_alert_rules.quiet_hours_enabled = (uint8_t)!g_alert_rules.quiet_hours_enabled;
-      }
     } else if (screen == APP_SCREEN_SETTINGS) {
       if (pressed & SCE_CTRL_UP) {
         settings_index--;
@@ -579,8 +490,8 @@ int main(void) {
             lan_scanner_request_rescan(&scanner);
           }
           alerts_push(&alerts, now, ALERT_INFO, "Applied scan profile: %s",
-                      (scan_profile == SCAN_PROFILE_QUICK) ? "Battery" :
-                      (scan_profile == SCAN_PROFILE_DEEP) ? "Audit" : "Balanced");
+                      (scan_profile == SCAN_PROFILE_QUICK) ? "Quick" :
+                      (scan_profile == SCAN_PROFILE_DEEP) ? "Deep" : "Normal");
         } else if (settings_index == 3) {
           char out_path[128];
           const int rc = export_json_write_snapshot(&scanner_metrics, now, out_path, sizeof(out_path));
@@ -610,7 +521,6 @@ int main(void) {
       }
       if (pressed & SCE_CTRL_SELECT) {
         bt_monitor_poll(&bt_monitor, now);
-        bt_monitor_get_metrics(&bt_monitor, &bt_metrics);
       }
     } else if (screen == APP_SCREEN_EXPORTS) {
       const int max_scroll = (export_viewer.count > 10U) ? (int)(export_viewer.count - 10U) : 0;
@@ -661,14 +571,6 @@ int main(void) {
       if (exports_scroll > max_scroll) exports_scroll = max_scroll;
       if (exports_compare_index >= (int)export_viewer.count) exports_compare_index = -1;
     } else if (screen == APP_SCREEN_HOST_DETAIL) {
-      if (pressed & SCE_CTRL_CROSS) {
-        screen = APP_SCREEN_HOST_TOOLS;
-      }
-      if (pressed & SCE_CTRL_TRIANGLE) {
-        if (scanner_metrics.host_count > 0U && host_detail_index >= 0 && (uint32_t)host_detail_index < scanner_metrics.host_count) {
-          alert_rules_toggle_whitelist(&g_alert_rules, scanner_metrics.hosts[host_detail_index].ip);
-        }
-      }
       if (pressed & SCE_CTRL_CIRCLE) {
         screen = APP_SCREEN_SCAN;
       }
@@ -679,16 +581,13 @@ int main(void) {
     }
 
     render_frame(&monitor, &latency_metrics, &scanner_metrics, &proxy_metrics,
-                 &alerts, &bt_metrics, &g_bt_store, &g_scan_history, &g_host_tools, &g_alert_rules, &g_ui_fx,
-                 scan_source, g_scan_view.indices, g_scan_view.count, scan_filter, scan_sort,
-                 scan_scroll, selected_host_index, host_detail_index, timeline_scroll, timeline_selected,
-                 map_selected, host_tools_selected, alerts_scroll, settings_index, rules_index, scan_profile,
+                 &alerts, &bt_metrics, scan_source, scan_view.indices, scan_view.count, scan_filter, scan_sort,
+                 scan_scroll, selected_host_index, host_detail_index, alerts_scroll, settings_index, scan_profile,
                  ui_audio.enabled, &export_viewer, exports_scroll, exports_selected, exports_compare_index,
                  screen, font, now);
   }
 
   proxy_client_stop(&proxy);
-  (void)bt_store_save(&g_bt_store, sceKernelGetProcessTimeWide() + 9000000ULL);
   ui_audio_term(&ui_audio);
   lan_scanner_stop(&scanner);
   latency_probe_stop(&probe);
