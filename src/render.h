@@ -31,14 +31,33 @@ typedef enum ScanProfile {
   SCAN_PROFILE_DEEP = 2
 } ScanProfile;
 
+typedef enum ScanFilterMode {
+  SCAN_FILTER_ALL = 0,
+  SCAN_FILTER_GATEWAY = 1,
+  SCAN_FILTER_NAMED = 2,
+  SCAN_FILTER_PORTS = 3
+} ScanFilterMode;
+
+typedef enum ScanSortMode {
+  SCAN_SORT_IP = 0,
+  SCAN_SORT_NAME = 1,
+  SCAN_SORT_PORTS = 2,
+  SCAN_SORT_SOURCE = 3
+} ScanSortMode;
+
 void render_frame(const NetMonitor *monitor,
                   const LatencyProbeMetrics *latency,
                   const LanScannerMetrics *scanner,
                   const ProxyClientMetrics *proxy,
                   const AlertManager *alerts,
                   ScanDataSource scan_source,
+                  const int *scan_view_indices,
+                  int scan_view_count,
+                  ScanFilterMode scan_filter,
+                  ScanSortMode scan_sort,
                   int scan_scroll,
                   int selected_host_index,
+                  int host_detail_index,
                   int alerts_scroll,
                   int settings_index,
                   ScanProfile scan_profile,
@@ -46,6 +65,7 @@ void render_frame(const NetMonitor *monitor,
                   const ExportViewer *export_viewer,
                   int exports_scroll,
                   int exports_selected,
+                  int exports_compare_index,
                   AppScreen screen,
                   vita2d_pgf *font,
                   uint64_t now_us);

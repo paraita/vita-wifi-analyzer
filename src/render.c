@@ -44,6 +44,26 @@ static const char *profile_name(ScanProfile p) {
   }
 }
 
+static const char *scan_filter_name(ScanFilterMode mode) {
+  switch (mode) {
+    case SCAN_FILTER_ALL: return "ALL";
+    case SCAN_FILTER_GATEWAY: return "GATEWAY";
+    case SCAN_FILTER_NAMED: return "NAMED";
+    case SCAN_FILTER_PORTS: return "OPEN PORTS";
+    default: return "UNKNOWN";
+  }
+}
+
+static const char *scan_sort_name(ScanSortMode mode) {
+  switch (mode) {
+    case SCAN_SORT_IP: return "IP";
+    case SCAN_SORT_NAME: return "NAME";
+    case SCAN_SORT_PORTS: return "PORTS";
+    case SCAN_SORT_SOURCE: return "SOURCE";
+    default: return "UNKNOWN";
+  }
+}
+
 static void draw_textf(vita2d_pgf *font, float x, float y, unsigned int color, float scale,
                        const char *fmt, ...) {
   char buffer[256];
@@ -185,7 +205,7 @@ static void draw_latency_strip(const LatencyProbeMetrics *latency, vita2d_pgf *f
 static void draw_nav_hint(vita2d_pgf *font, AppScreen screen) {
   if (screen == APP_SCREEN_SCAN) {
     draw_text_centered(font, 525.0f, C_GRID, 0.75f,
-                       "L/R:view  CROSS:detail  TRIANGLE:start/stop  SELECT:rescan  UP/DOWN:scroll  START:quit");
+                       "L/R:view  UP/DOWN:select  LEFT/RIGHT:sort  CIRCLE:filter  CROSS:detail  TRIANGLE:start/stop");
     return;
   }
   if (screen == APP_SCREEN_EXPORTS) {
@@ -328,6 +348,10 @@ static void truncate_copy(const char *src, char *dst, size_t dst_len) {
 static void draw_scan_screen(const LanScannerMetrics *scanner,
                              const ProxyClientMetrics *proxy,
                              ScanDataSource source,
+                             const int *view_indices,
+                             int view_count,
+                             ScanFilterMode filter_mode,
+                             ScanSortMode sort_mode,
                              int scroll,
                              int selected_host_index,
                              vita2d_pgf *font) {
@@ -341,7 +365,7 @@ static void draw_scan_screen(const LanScannerMetrics *scanner,
   draw_textf(font, 42.0f, 105.0f, C_TEXT, 1.0f, "LAN SCANNER");
   draw_textf(font, 240.0f, 105.0f, mode_color, 0.9f, "[%s]", mode_name);
 
-  uint32_t host_count = 0;
+  uint32_t raw_host_count = 0;
   const LanHostResult *hosts = NULL;
   uint32_t scanned = 0;
   uint32_t total = 0;
@@ -357,7 +381,7 @@ static void draw_scan_screen(const LanScannerMetrics *scanner,
 
   if (showing_proxy) {
     hosts = proxy->hosts;
-    host_count = proxy->host_count;
+    raw_host_count = proxy->host_count;
     scanned = proxy->host_count;
     total = proxy->host_count;
     alive = proxy->host_count;
@@ -371,7 +395,7 @@ static void draw_scan_screen(const LanScannerMetrics *scanner,
                proxy->target_ip, proxy->target_port, proxy->connected ? "(connected)" : "(offline)");
   } else {
     hosts = scanner->hosts;
-    host_count = scanner->host_count;
+    raw_host_count = scanner->host_count;
     scanned = scanner->hosts_scanned;
     total = scanner->hosts_total;
     alive = scanner->hosts_alive;
@@ -407,7 +431,8 @@ static void draw_scan_screen(const LanScannerMetrics *scanner,
   }
   draw_textf(font, 42.0f, 216.0f, C_GRID, 0.72f, "Hits M:%u S:%u N:%u I:%u T:%u",
              scanner->mdns_hits, scanner->ssdp_hits, scanner->nbns_hits, scanner->icmp_hits, scanner->tcp_hits);
-  draw_textf(font, 805.0f, 196.0f, C_GRID, 0.75f, "Rows: %u", host_count);
+  draw_textf(font, 620.0f, 216.0f, C_GRID, 0.72f, "Filter:%s  Sort:%s  View:%d/%u",
+             scan_filter_name(filter_mode), scan_sort_name(sort_mode), view_count, raw_host_count);
   (void)subnet;
 
   const float table_x = 42.0f;
@@ -430,8 +455,13 @@ static void draw_scan_screen(const LanScannerMetrics *scanner,
     vita2d_draw_rectangle(table_x, y, table_w, row_h - 1.0f,
                           selected ? RGBA8(40, 58, 56, 255) : RGBA8(19, 33, 36, 255));
 
-    if (idx < host_count) {
-      const LanHostResult *host = &hosts[idx];
+    if (idx < (uint32_t)view_count) {
+      const int host_idx = view_indices[idx];
+      if (host_idx < 0 || host_idx >= (int)raw_host_count) {
+        draw_textf(font, table_x + 12.0f, y + 21.0f, C_WARN, 0.72f, "Index error");
+        continue;
+      }
+      const LanHostResult *host = &hosts[host_idx];
       char ports[96];
       char sources[96];
       char hostname_short[30];
@@ -577,8 +607,13 @@ void render_frame(const NetMonitor *monitor,
                   const ProxyClientMetrics *proxy,
                   const AlertManager *alerts,
                   ScanDataSource scan_source,
+                  const int *scan_view_indices,
+                  int scan_view_count,
+                  ScanFilterMode scan_filter,
+                  ScanSortMode scan_sort,
                   int scan_scroll,
                   int selected_host_index,
+                  int host_detail_index,
                   int alerts_scroll,
                   int settings_index,
                   ScanProfile scan_profile,
@@ -586,9 +621,11 @@ void render_frame(const NetMonitor *monitor,
                   const ExportViewer *export_viewer,
                   int exports_scroll,
                   int exports_selected,
+                  int exports_compare_index,
                   AppScreen screen,
                   vita2d_pgf *font,
                   uint64_t now_us) {
+  (void)exports_compare_index;
   vita2d_start_drawing();
   vita2d_clear_screen();
 
@@ -597,9 +634,10 @@ void render_frame(const NetMonitor *monitor,
   if (screen == APP_SCREEN_STATS) {
     draw_stats_screen(monitor, latency, font, now_us);
   } else if (screen == APP_SCREEN_SCAN) {
-    draw_scan_screen(scanner, proxy, scan_source, scan_scroll, selected_host_index, font);
+    draw_scan_screen(scanner, proxy, scan_source, scan_view_indices, scan_view_count,
+                     scan_filter, scan_sort, scan_scroll, selected_host_index, font);
   } else if (screen == APP_SCREEN_HOST_DETAIL) {
-    draw_host_detail_screen(scanner, selected_host_index, font);
+    draw_host_detail_screen(scanner, host_detail_index, font);
   } else if (screen == APP_SCREEN_ALERTS) {
     draw_alerts_screen(alerts, alerts_scroll, font, now_us);
   } else if (screen == APP_SCREEN_SETTINGS) {

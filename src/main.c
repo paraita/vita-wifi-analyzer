@@ -18,11 +18,99 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <vita2d.h>
 
 enum {
   NET_MEMPOOL_SIZE = 1 * 1024 * 1024
 };
+
+typedef struct ScanView {
+  int indices[LAN_SCANNER_MAX_HOSTS];
+  int count;
+} ScanView;
+
+static int parse_ipv4(const char *ip, int out[4]) {
+  if (sscanf(ip, "%d.%d.%d.%d", &out[0], &out[1], &out[2], &out[3]) == 4) {
+    return 1;
+  }
+  out[0] = out[1] = out[2] = out[3] = 0;
+  return 0;
+}
+
+static int host_matches_filter(const LanHostResult *h, ScanFilterMode filter) {
+  switch (filter) {
+    case SCAN_FILTER_GATEWAY:
+      return h->is_gateway ? 1 : 0;
+    case SCAN_FILTER_NAMED:
+      return h->hostname[0] != '\0';
+    case SCAN_FILTER_PORTS:
+      return h->open_port_count > 0;
+    case SCAN_FILTER_ALL:
+    default:
+      return 1;
+  }
+}
+
+static int compare_hosts(const LanHostResult *a, const LanHostResult *b, ScanSortMode sort) {
+  if (sort == SCAN_SORT_NAME) {
+    const int a_empty = (a->hostname[0] == '\0');
+    const int b_empty = (b->hostname[0] == '\0');
+    if (a_empty != b_empty) return a_empty ? 1 : -1;
+    const int c = strcasecmp(a->hostname, b->hostname);
+    if (c != 0) return c;
+  } else if (sort == SCAN_SORT_PORTS) {
+    if (a->open_port_count != b->open_port_count) {
+      return (a->open_port_count > b->open_port_count) ? -1 : 1;
+    }
+  } else if (sort == SCAN_SORT_SOURCE) {
+    if (a->source_flags != b->source_flags) {
+      return (a->source_flags > b->source_flags) ? -1 : 1;
+    }
+  }
+
+  int a_ip[4];
+  int b_ip[4];
+  const int a_ok = parse_ipv4(a->ip, a_ip);
+  const int b_ok = parse_ipv4(b->ip, b_ip);
+  if (a_ok && b_ok) {
+    for (int i = 0; i < 4; i++) {
+      if (a_ip[i] != b_ip[i]) {
+        return (a_ip[i] < b_ip[i]) ? -1 : 1;
+      }
+    }
+    return 0;
+  }
+  return strcmp(a->ip, b->ip);
+}
+
+static void build_scan_view(const LanHostResult *hosts,
+                            uint32_t host_count,
+                            ScanFilterMode filter,
+                            ScanSortMode sort,
+                            ScanView *out) {
+  out->count = 0;
+  for (uint32_t i = 0; i < host_count && out->count < LAN_SCANNER_MAX_HOSTS; i++) {
+    if (host_matches_filter(&hosts[i], filter)) {
+      out->indices[out->count++] = (int)i;
+    }
+  }
+
+  for (int i = 1; i < out->count; i++) {
+    const int idx = out->indices[i];
+    int j = i - 1;
+    while (j >= 0) {
+      const LanHostResult *left = &hosts[out->indices[j]];
+      const LanHostResult *right = &hosts[idx];
+      if (compare_hosts(left, right, sort) <= 0) {
+        break;
+      }
+      out->indices[j + 1] = out->indices[j];
+      j--;
+    }
+    out->indices[j + 1] = idx;
+  }
+}
 
 static void apply_scan_profile(LanScannerConfig *cfg, ScanProfile profile) {
   lan_scanner_default_config(cfg);
@@ -137,13 +225,19 @@ int main(void) {
   uint64_t next_poll = 0;
   AppScreen screen = APP_SCREEN_RADAR;
   ScanDataSource scan_source = SCAN_SOURCE_LOCAL;
+  ScanFilterMode scan_filter = SCAN_FILTER_ALL;
+  ScanSortMode scan_sort = SCAN_SORT_IP;
+  ScanView scan_view;
+  scan_view.count = 0;
   int scan_scroll = 0;
   int selected_host_index = 0;
+  int host_detail_index = 0;
   int alerts_scroll = 0;
   int settings_index = 0;
   ScanProfile scan_profile = SCAN_PROFILE_NORMAL;
   int exports_scroll = 0;
   int exports_selected = 0;
+  int exports_compare_index = -1;
   AppScreen prev_screen = screen;
   uint32_t prev_scan_round = 0;
   int prev_scan_error = 0;
@@ -261,8 +355,13 @@ int main(void) {
 
       scan_source = SCAN_SOURCE_LOCAL;
 
-      const uint32_t host_count = (scan_source == SCAN_SOURCE_PROXY) ? proxy_metrics.host_count
-                                                                      : scanner_metrics.host_count;
+      if (scan_source == SCAN_SOURCE_PROXY) {
+        build_scan_view(proxy_metrics.hosts, proxy_metrics.host_count, scan_filter, scan_sort, &scan_view);
+      } else {
+        build_scan_view(scanner_metrics.hosts, scanner_metrics.host_count, scan_filter, scan_sort, &scan_view);
+      }
+
+      const uint32_t host_count = (uint32_t)scan_view.count;
       const int rows_visible = 8;
       const int max_scroll = (host_count > (uint32_t)rows_visible)
                                ? (int)(host_count - (uint32_t)rows_visible)
@@ -285,6 +384,24 @@ int main(void) {
           local_scan_armed = true;
         }
         scan_scroll = 0;
+      }
+      if (pressed & SCE_CTRL_CIRCLE) {
+        scan_filter = (ScanFilterMode)((scan_filter + 1) % 4);
+        selected_host_index = 0;
+        scan_scroll = 0;
+        ui_audio_event(&ui_audio, UI_AUDIO_NAV);
+      }
+      if (pressed & SCE_CTRL_LEFT) {
+        scan_sort = (ScanSortMode)((scan_sort + 3) % 4);
+        selected_host_index = 0;
+        scan_scroll = 0;
+        ui_audio_event(&ui_audio, UI_AUDIO_NAV);
+      }
+      if (pressed & SCE_CTRL_RIGHT) {
+        scan_sort = (ScanSortMode)((scan_sort + 1) % 4);
+        selected_host_index = 0;
+        scan_scroll = 0;
+        ui_audio_event(&ui_audio, UI_AUDIO_NAV);
       }
       if (pressed & SCE_CTRL_TRIANGLE) {
         if (scanner.running) {
@@ -325,10 +442,8 @@ int main(void) {
         scan_scroll = max_scroll;
       }
       if (pressed & SCE_CTRL_CROSS) {
-        if (scanner_metrics.host_count > 0) {
-          if ((uint32_t)selected_host_index >= scanner_metrics.host_count) {
-            selected_host_index = (int)scanner_metrics.host_count - 1;
-          }
+        if (host_count > 0 && selected_host_index >= 0 && selected_host_index < (int)host_count) {
+          host_detail_index = scan_view.indices[selected_host_index];
           screen = APP_SCREEN_HOST_DETAIL;
         }
       }
@@ -412,7 +527,6 @@ int main(void) {
           ui_audio_event(&ui_audio, UI_AUDIO_EXPORT_FAIL);
         }
       }
-
       if (exports_selected < 0) exports_selected = 0;
       if (exports_selected >= (int)export_viewer.count) exports_selected = (int)export_viewer.count - 1;
       if (exports_selected < 0) exports_selected = 0;
@@ -429,8 +543,10 @@ int main(void) {
     }
 
     render_frame(&monitor, &latency_metrics, &scanner_metrics, &proxy_metrics,
-                 &alerts, scan_source, scan_scroll, selected_host_index, alerts_scroll, settings_index, scan_profile,
-                 ui_audio.enabled, &export_viewer, exports_scroll, exports_selected, screen, font, now);
+                 &alerts, scan_source, scan_view.indices, scan_view.count, scan_filter, scan_sort,
+                 scan_scroll, selected_host_index, host_detail_index, alerts_scroll, settings_index, scan_profile,
+                 ui_audio.enabled, &export_viewer, exports_scroll, exports_selected, exports_compare_index,
+                 screen, font, now);
   }
 
   proxy_client_stop(&proxy);
