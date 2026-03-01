@@ -79,13 +79,48 @@ static void draw_textf(vita2d_pgf *font, float x, float y, unsigned int color, f
   vita2d_pgf_draw_text(font, x, y, color, scale, buffer);
 }
 
+static void ellipsize_text(vita2d_pgf *font, float scale, const char *src, int max_width, char *dst, size_t dst_len) {
+  if (dst_len == 0) return;
+  if (src == NULL) {
+    dst[0] = '\0';
+    return;
+  }
+  snprintf(dst, dst_len, "%s", src);
+  if (vita2d_pgf_text_width(font, scale, dst) <= max_width) {
+    return;
+  }
+
+  const char *dots = "...";
+  size_t n = strlen(dst);
+  while (n > 0) {
+    dst[n - 1] = '\0';
+    char trial[256];
+    snprintf(trial, sizeof(trial), "%s%s", dst, dots);
+    if (vita2d_pgf_text_width(font, scale, trial) <= max_width) {
+      snprintf(dst, dst_len, "%s", trial);
+      return;
+    }
+    n--;
+  }
+  snprintf(dst, dst_len, "%s", dots);
+}
+
+static void draw_text_clamped(vita2d_pgf *font, float x, float y, unsigned int color, float scale,
+                              int max_width, const char *text) {
+  char clipped[256];
+  ellipsize_text(font, scale, text, max_width, clipped, sizeof(clipped));
+  vita2d_pgf_draw_text(font, x, y, color, scale, clipped);
+}
+
 static void draw_text_centered(vita2d_pgf *font, float y, unsigned int color, float scale, const char *text) {
-  const int width = vita2d_pgf_text_width(font, scale, text);
+  char clipped[256];
+  ellipsize_text(font, scale, text, SCREEN_W - 16, clipped, sizeof(clipped));
+  const int width = vita2d_pgf_text_width(font, scale, clipped);
   float x = ((float)SCREEN_W - (float)width) * 0.5f;
   if (x < 8.0f) {
     x = 8.0f;
   }
-  vita2d_pgf_draw_text(font, x, y, color, scale, text);
+  vita2d_pgf_draw_text(font, x, y, color, scale, clipped);
 }
 
 static void draw_fx_background(const UiFxState *fx) {
@@ -556,9 +591,13 @@ static void draw_host_detail_screen(const LanScannerMetrics *scanner,
   format_ports(h, ports, sizeof(ports));
   format_sources(h->source_flags, sources, sizeof(sources));
   draw_textf(font, 50.0f, 152.0f, C_TEXT, 0.9f, "IP: %s", h->ip);
-  draw_textf(font, 50.0f, 182.0f, C_TEXT, 0.9f, "Name: %s", h->hostname[0] ? h->hostname : "-");
+  char name_line[128];
+  snprintf(name_line, sizeof(name_line), "Name: %s", h->hostname[0] ? h->hostname : "-");
+  draw_text_clamped(font, 50.0f, 182.0f, C_TEXT, 0.9f, 820, name_line);
   draw_textf(font, 50.0f, 212.0f, C_TEXT, 0.9f, "Sources: %s", sources);
-  draw_textf(font, 50.0f, 242.0f, C_TEXT, 0.9f, "Service hint: %s", h->service_hint[0] ? h->service_hint : "-");
+  char hint_line[128];
+  snprintf(hint_line, sizeof(hint_line), "Service hint: %s", h->service_hint[0] ? h->service_hint : "-");
+  draw_text_clamped(font, 50.0f, 242.0f, C_TEXT, 0.9f, 820, hint_line);
   draw_textf(font, 50.0f, 272.0f, C_TEXT, 0.9f, "Open ports: %s", ports);
   draw_textf(font, 50.0f, 302.0f, h->is_gateway ? C_ACCENT : C_TEXT, 0.9f, "Role: %s",
              h->is_gateway ? "Gateway" : "Host");
@@ -704,7 +743,9 @@ static void draw_map_screen(const NetMonitor *monitor,
     const LanHostResult *h = &scanner->hosts[map_selected];
     draw_textf(font, 560.0f, 186.0f, C_TEXT, 0.9f, "Selected host");
     draw_textf(font, 560.0f, 214.0f, C_TEXT, 0.82f, "IP: %s", h->ip);
-    draw_textf(font, 560.0f, 240.0f, C_TEXT, 0.82f, "Name: %s", h->hostname[0] ? h->hostname : "-");
+      char map_name[128];
+      snprintf(map_name, sizeof(map_name), "Name: %s", h->hostname[0] ? h->hostname : "-");
+      draw_text_clamped(font, 560.0f, 240.0f, C_TEXT, 0.82f, 340, map_name);
     draw_textf(font, 560.0f, 266.0f, C_TEXT, 0.82f, "Role: %s", h->is_gateway ? "Gateway" : "Host");
     draw_textf(font, 560.0f, 292.0f, C_TEXT, 0.82f, "Ports: %u", h->open_port_count);
   }
@@ -786,7 +827,7 @@ static void draw_exports_screen(const ExportViewer *viewer,
     vita2d_draw_rectangle(left_x + 6.0f, y, left_w - 12.0f, row_h - 2.0f,
                           selected ? RGBA8(54, 76, 72, 255) : RGBA8(21, 36, 40, 255));
     if (idx < viewer->count) {
-      draw_textf(font, left_x + 12.0f, y + 20.0f, selected ? C_ACCENT : C_TEXT, 0.72f, "%s", viewer->exports[idx].label);
+      draw_text_clamped(font, left_x + 12.0f, y + 20.0f, selected ? C_ACCENT : C_TEXT, 0.72f, (int)left_w - 30, viewer->exports[idx].label);
     }
   }
 
@@ -802,7 +843,9 @@ static void draw_exports_screen(const ExportViewer *viewer,
   }
 
   const ExportSummary *e = &viewer->exports[exports_selected];
-  draw_textf(font, right_x + 10.0f, right_y + 54.0f, C_TEXT, 0.82f, "File: %s", e->label);
+  char file_line[128];
+  snprintf(file_line, sizeof(file_line), "File: %s", e->label);
+  draw_text_clamped(font, right_x + 10.0f, right_y + 54.0f, C_TEXT, 0.82f, (int)right_w - 20, file_line);
   draw_textf(font, right_x + 10.0f, right_y + 82.0f, C_TEXT, 0.82f, "Subnet: %s", e->subnet[0] ? e->subnet : "-");
   draw_textf(font, right_x + 10.0f, right_y + 110.0f, C_TEXT, 0.82f, "Host count: %u", e->host_count);
   draw_textf(font, right_x + 10.0f, right_y + 138.0f, C_GRID, 0.8f, "Preview hosts:");
@@ -846,7 +889,9 @@ static void draw_exports_screen(const ExportViewer *viewer,
     }
   }
 
-  draw_textf(font, right_x + 10.0f, right_y + 274.0f, C_ACCENT, 0.78f, "Delta vs baseline: %s", base->label);
+  char base_line[128];
+  snprintf(base_line, sizeof(base_line), "Delta vs baseline: %s", base->label);
+  draw_text_clamped(font, right_x + 10.0f, right_y + 274.0f, C_ACCENT, 0.78f, (int)right_w - 20, base_line);
   draw_textf(font, right_x + 10.0f, right_y + 296.0f, C_PRIMARY, 0.78f, "Added: %d", added);
   draw_textf(font, right_x + 140.0f, right_y + 296.0f, C_WARN, 0.78f, "Removed: %d", removed);
   for (int i = 0; i < added_preview; i++) {
@@ -881,7 +926,9 @@ static void draw_alerts_screen(const AlertManager *alerts, int scroll, vita2d_pg
     const unsigned int color = (e.severity == ALERT_ERROR) ? C_WARN :
                                (e.severity == ALERT_WARN) ? C_ACCENT : C_TEXT;
     const uint32_t sec = (uint32_t)(e.timestamp_us / 1000000ULL);
-    draw_textf(font, 50.0f, 176.0f + i * 30.0f, color, 0.78f, "[%06us] %s", sec, e.text);
+    char line[256];
+    snprintf(line, sizeof(line), "[%06us] %s", sec, e.text);
+    draw_text_clamped(font, 50.0f, 176.0f + i * 30.0f, color, 0.78f, 860, line);
   }
 }
 
@@ -907,7 +954,9 @@ static void draw_bt_screen(const BtMonitorMetrics *bt, const BtStore *bt_store, 
   for (uint32_t i = 0; i < bt->paired_count && i < BT_MONITOR_MAX_PAIRED; i++) {
     const BtPairedDevice *d = &bt->paired[i];
     const float y = left_y + 48.0f + 34.0f * (float)i;
-    draw_textf(font, left_x + 12.0f, y, C_TEXT, 0.74f, "%u) %s", i + 1U, d->name);
+    char name_line[96];
+    snprintf(name_line, sizeof(name_line), "%u) %s", i + 1U, d->name);
+    draw_text_clamped(font, left_x + 12.0f, y, C_TEXT, 0.74f, (int)left_w - 24, name_line);
     draw_textf(font, left_x + 34.0f, y + 16.0f, C_GRID, 0.70f, "%s  class:0x%06X", d->mac, d->bt_class);
   }
   if (bt->paired_count == 0) {
@@ -928,8 +977,10 @@ static void draw_bt_screen(const BtMonitorMetrics *bt, const BtStore *bt_store, 
       const BtSeenDevice *d = &bt_store->devices[idx];
       const uint64_t age_s = (now_us > d->last_seen_us) ? ((now_us - d->last_seen_us) / 1000000ULL) : 0ULL;
       const float y = right_y + 52.0f + 28.0f * (float)i;
-      draw_textf(font, right_x + 10.0f, y, C_TEXT, 0.72f, "%s %s (%s) -%llus",
-                 d->mac, d->name[0] ? d->name : "-", d->type, (unsigned long long)age_s);
+      char seen_line[160];
+      snprintf(seen_line, sizeof(seen_line), "%s %s (%s) -%llus",
+               d->mac, d->name[0] ? d->name : "-", d->type, (unsigned long long)age_s);
+      draw_text_clamped(font, right_x + 10.0f, y, C_TEXT, 0.72f, (int)right_w - 20, seen_line);
     }
   }
 }
