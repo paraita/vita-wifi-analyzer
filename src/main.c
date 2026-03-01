@@ -7,6 +7,7 @@
 #include "export_json.h"
 #include "export_viewer.h"
 #include "ui_audio.h"
+#include "bt_monitor.h"
 
 #include <psp2/ctrl.h>
 #include <psp2/kernel/processmgr.h>
@@ -214,6 +215,8 @@ int main(void) {
 
   ProxyClient proxy;
   proxy_client_init(&proxy);
+  BtMonitor bt_monitor;
+  bt_monitor_init(&bt_monitor);
   AlertManager alerts;
   alerts_init(&alerts);
   ExportViewer export_viewer;
@@ -288,6 +291,9 @@ int main(void) {
 
     ProxyClientMetrics proxy_metrics;
     proxy_client_get_metrics(&proxy, &proxy_metrics);
+    bt_monitor_poll(&bt_monitor, now);
+    BtMonitorMetrics bt_metrics;
+    bt_monitor_get_metrics(&bt_monitor, &bt_metrics);
 
     if (screen != prev_screen && screen == APP_SCREEN_EXPORTS) {
       (void)export_json_rebuild_index();
@@ -501,6 +507,21 @@ int main(void) {
           screen = APP_SCREEN_EXPORTS;
         }
       }
+    } else if (screen == APP_SCREEN_BT) {
+      if (pressed & SCE_CTRL_TRIANGLE) {
+        const int enable = bt_metrics.inquiry_running ? 0 : 1;
+        const int rc = bt_monitor_set_inquiry(&bt_monitor, enable);
+        if (rc < 0) {
+          alerts_push(&alerts, now, ALERT_ERROR, "BT inquiry toggle failed: %d", rc);
+          ui_audio_event(&ui_audio, UI_AUDIO_ERROR);
+        } else {
+          alerts_push(&alerts, now, ALERT_INFO, "BT inquiry: %s", enable ? "STARTED" : "STOPPED");
+          ui_audio_event(&ui_audio, UI_AUDIO_SCAN_TOGGLE);
+        }
+      }
+      if (pressed & SCE_CTRL_SELECT) {
+        bt_monitor_poll(&bt_monitor, now);
+      }
     } else if (screen == APP_SCREEN_EXPORTS) {
       const int max_scroll = (export_viewer.count > 10U) ? (int)(export_viewer.count - 10U) : 0;
       if (pressed & SCE_CTRL_UP) {
@@ -560,7 +581,7 @@ int main(void) {
     }
 
     render_frame(&monitor, &latency_metrics, &scanner_metrics, &proxy_metrics,
-                 &alerts, scan_source, scan_view.indices, scan_view.count, scan_filter, scan_sort,
+                 &alerts, &bt_metrics, scan_source, scan_view.indices, scan_view.count, scan_filter, scan_sort,
                  scan_scroll, selected_host_index, host_detail_index, alerts_scroll, settings_index, scan_profile,
                  ui_audio.enabled, &export_viewer, exports_scroll, exports_selected, exports_compare_index,
                  screen, font, now);

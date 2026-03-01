@@ -7,6 +7,7 @@
 #include "proxy_client.h"
 #include "alerts.h"
 #include "export_viewer.h"
+#include "bt_monitor.h"
 #include <vita2d.h>
 
 typedef enum AppScreen {
@@ -16,8 +17,9 @@ typedef enum AppScreen {
   APP_SCREEN_HOST_DETAIL = 3,
   APP_SCREEN_ALERTS = 4,
   APP_SCREEN_SETTINGS = 5,
-  APP_SCREEN_EXPORTS = 6,
-  APP_SCREEN_COUNT = 7
+  APP_SCREEN_BT = 6,
+  APP_SCREEN_EXPORTS = 7,
+  APP_SCREEN_COUNT = 8
 } AppScreen;
 
 typedef enum ScanDataSource {
@@ -50,6 +52,7 @@ void render_frame(const NetMonitor *monitor,
                   const LanScannerMetrics *scanner,
                   const ProxyClientMetrics *proxy,
                   const AlertManager *alerts,
+                  const BtMonitorMetrics *bt,
                   ScanDataSource scan_source,
                   const int *scan_view_indices,
                   int scan_view_count,

@@ -30,6 +30,7 @@ static const char *screen_tab_name(AppScreen screen) {
     case APP_SCREEN_HOST_DETAIL: return "DETAIL";
     case APP_SCREEN_ALERTS: return "ALERTS";
     case APP_SCREEN_SETTINGS: return "SET";
+    case APP_SCREEN_BT: return "BT";
     case APP_SCREEN_EXPORTS: return "EXPORT";
     default: return "UNKNOWN";
   }
@@ -216,6 +217,11 @@ static void draw_nav_hint(vita2d_pgf *font, AppScreen screen) {
   if (screen == APP_SCREEN_SETTINGS) {
     draw_text_centered(font, 525.0f, C_GRID, 0.75f,
                        "L/R:view  UP/DOWN:option  CROSS:apply/open  START:quit");
+    return;
+  }
+  if (screen == APP_SCREEN_BT) {
+    draw_text_centered(font, 525.0f, C_GRID, 0.75f,
+                       "L/R:view  TRIANGLE:inquiry start/stop  SELECT:refresh  START:quit");
     return;
   }
 
@@ -660,11 +666,63 @@ static void draw_alerts_screen(const AlertManager *alerts, int scroll, vita2d_pg
   }
 }
 
+static void draw_bt_screen(const BtMonitorMetrics *bt, vita2d_pgf *font, uint64_t now_us) {
+  vita2d_draw_rectangle(24.0f, 72.0f, 912.0f, 430.0f, C_PANEL);
+  draw_textf(font, 42.0f, 104.0f, C_TEXT, 1.0f, "BLUETOOTH TOOLS");
+
+  const unsigned int api_color = bt->api_available ? C_PRIMARY : C_WARN;
+  const unsigned int bt_color = bt->bt_enabled ? C_PRIMARY : C_WARN;
+  const unsigned int inq_color = bt->inquiry_running ? C_ACCENT : C_GRID;
+  draw_textf(font, 42.0f, 132.0f, api_color, 0.8f, "API: %s", bt->api_available ? "AVAILABLE" : "UNAVAILABLE");
+  draw_textf(font, 210.0f, 132.0f, bt_color, 0.8f, "BT: %s", bt->bt_enabled ? "ENABLED" : "DISABLED");
+  draw_textf(font, 340.0f, 132.0f, inq_color, 0.8f, "Inquiry: %s", bt->inquiry_running ? "RUNNING" : "IDLE");
+  draw_textf(font, 530.0f, 132.0f, C_GRID, 0.76f, "Last error: %d (0x%08X)", bt->last_error, (unsigned int)bt->last_error);
+
+  const float left_x = 42.0f;
+  const float left_y = 154.0f;
+  const float left_w = 420.0f;
+  const float box_h = 336.0f;
+  vita2d_draw_rectangle(left_x, left_y, left_w, box_h, RGBA8(16, 27, 31, 255));
+  draw_textf(font, left_x + 10.0f, left_y + 22.0f, C_TEXT, 0.82f, "Paired devices (%u)", bt->paired_count);
+
+  for (uint32_t i = 0; i < bt->paired_count && i < BT_MONITOR_MAX_PAIRED; i++) {
+    const BtPairedDevice *d = &bt->paired[i];
+    const float y = left_y + 48.0f + 34.0f * (float)i;
+    draw_textf(font, left_x + 12.0f, y, C_TEXT, 0.74f, "%u) %s", i + 1U, d->name);
+    draw_textf(font, left_x + 34.0f, y + 16.0f, C_GRID, 0.70f, "%s  class:0x%06X", d->mac, d->bt_class);
+  }
+  if (bt->paired_count == 0) {
+    draw_textf(font, left_x + 12.0f, left_y + 58.0f, C_GRID, 0.76f, "No paired device reported.");
+  }
+
+  const float right_x = 478.0f;
+  const float right_y = 154.0f;
+  const float right_w = 440.0f;
+  vita2d_draw_rectangle(right_x, right_y, right_w, box_h, RGBA8(16, 27, 31, 255));
+  draw_textf(font, right_x + 10.0f, right_y + 22.0f, C_TEXT, 0.82f, "Inquiry events (%u)", bt->event_count);
+  if (bt->event_count == 0) {
+    draw_textf(font, right_x + 10.0f, right_y + 58.0f, C_GRID, 0.76f, "No event yet. Start inquiry with TRIANGLE.");
+    return;
+  }
+
+  const int rows = 10;
+  for (int i = 0; i < rows; i++) {
+    const int idx = (int)bt->event_count - 1 - i;
+    if (idx < 0) break;
+    const BtEventEntry *e = &bt->events[idx];
+    const uint64_t age_s = (now_us > e->timestamp_us) ? ((now_us - e->timestamp_us) / 1000000ULL) : 0ULL;
+    const float y = right_y + 52.0f + 28.0f * (float)i;
+    draw_textf(font, right_x + 10.0f, y, C_TEXT, 0.72f, "id:%02u  %s  -%llus",
+               (unsigned int)e->event_id, e->mac, (unsigned long long)age_s);
+  }
+}
+
 void render_frame(const NetMonitor *monitor,
                   const LatencyProbeMetrics *latency,
                   const LanScannerMetrics *scanner,
                   const ProxyClientMetrics *proxy,
                   const AlertManager *alerts,
+                  const BtMonitorMetrics *bt,
                   ScanDataSource scan_source,
                   const int *scan_view_indices,
                   int scan_view_count,
@@ -701,6 +759,8 @@ void render_frame(const NetMonitor *monitor,
     draw_alerts_screen(alerts, alerts_scroll, font, now_us);
   } else if (screen == APP_SCREEN_SETTINGS) {
     draw_settings_screen(font, settings_index, scan_profile, audio_enabled);
+  } else if (screen == APP_SCREEN_BT) {
+    draw_bt_screen(bt, font, now_us);
   } else if (screen == APP_SCREEN_EXPORTS) {
     draw_exports_screen(export_viewer, exports_scroll, exports_selected, exports_compare_index, font);
   } else {
