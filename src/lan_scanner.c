@@ -500,6 +500,15 @@ void lan_scanner_get_metrics(const LanScanner *scanner, LanScannerMetrics *out) 
   for (uint32_t i = 0; i < out->host_count; i++) {
     out->hosts[i] = scanner->hosts[i];
   }
+
+  /* UPnP devices from the embedded discovery engine */
+  out->upnp_count = scanner->discovery.upnp_count;
+  if (out->upnp_count > DISCOVERY_MAX_UPNP) {
+    out->upnp_count = DISCOVERY_MAX_UPNP;
+  }
+  for (uint32_t i = 0; i < out->upnp_count; i++) {
+    out->upnp_devices[i] = scanner->discovery.upnp_devices[i];
+  }
 }
 
 void lan_scanner_set_ip_hint(LanScanner *scanner, const char *ip_address) {

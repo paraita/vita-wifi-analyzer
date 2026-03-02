@@ -24,15 +24,17 @@ static const unsigned int C_TEXT = RGBA8(210, 244, 233, 255);
 
 static const char *screen_tab_name(AppScreen screen) {
   switch (screen) {
-    case APP_SCREEN_RADAR: return "RADAR";
-    case APP_SCREEN_STATS: return "STATS";
-    case APP_SCREEN_SCAN: return "SCAN";
+    case APP_SCREEN_RADAR:       return "RADAR";
+    case APP_SCREEN_STATS:       return "STATS";
+    case APP_SCREEN_SCAN:        return "SCAN";
     case APP_SCREEN_HOST_DETAIL: return "DETAIL";
-    case APP_SCREEN_ALERTS: return "ALERTS";
-    case APP_SCREEN_SETTINGS: return "SET";
-    case APP_SCREEN_BT: return "BT";
-    case APP_SCREEN_EXPORTS: return "EXPORT";
-    default: return "UNKNOWN";
+    case APP_SCREEN_ALERTS:      return "ALERTS";
+    case APP_SCREEN_SETTINGS:    return "SET";
+    case APP_SCREEN_BT:          return "BT";
+    case APP_SCREEN_NFC:         return "NFC";
+    case APP_SCREEN_WIFI_AP:     return "WIFI";
+    case APP_SCREEN_EXPORTS:     return "EXPORT";
+    default:                     return "UNKNOWN";
   }
 }
 
@@ -222,6 +224,16 @@ static void draw_nav_hint(vita2d_pgf *font, AppScreen screen) {
   if (screen == APP_SCREEN_BT) {
     draw_text_centered(font, 525.0f, C_GRID, 0.75f,
                        "L/R:view  TRIANGLE:inquiry start/stop  SELECT:refresh  START:quit");
+    return;
+  }
+  if (screen == APP_SCREEN_NFC) {
+    draw_text_centered(font, 525.0f, C_GRID, 0.75f,
+                       "L/R:view  TRIANGLE:detect on/off  SELECT:clear tags  UP/DOWN:scroll  START:quit");
+    return;
+  }
+  if (screen == APP_SCREEN_WIFI_AP) {
+    draw_text_centered(font, 525.0f, C_GRID, 0.75f,
+                       "L/R:view  TRIANGLE:scan  UP/DOWN:scroll  START:quit");
     return;
   }
 
@@ -494,8 +506,10 @@ static void draw_host_detail_screen(const LanScannerMetrics *scanner, int select
     return;
   }
 
-  if (selected_host_index < 0) selected_host_index = 0;
-  if ((uint32_t)selected_host_index >= scanner->host_count) selected_host_index = (int)scanner->host_count - 1;
+  if (selected_host_index < 0) { selected_host_index = 0; }
+  if ((uint32_t)selected_host_index >= scanner->host_count) {
+    selected_host_index = (int)scanner->host_count - 1;
+  }
 
   const LanHostResult *h = &scanner->hosts[selected_host_index];
   char ports[96];
@@ -509,7 +523,32 @@ static void draw_host_detail_screen(const LanScannerMetrics *scanner, int select
   draw_textf(font, 50.0f, 272.0f, C_TEXT, 0.9f, "Open ports: %s", ports);
   draw_textf(font, 50.0f, 302.0f, h->is_gateway ? C_ACCENT : C_TEXT, 0.9f, "Role: %s",
              h->is_gateway ? "Gateway" : "Host");
-  draw_textf(font, 50.0f, 332.0f, C_GRID, 0.84f, "Last error: %d (0x%08X)", h->last_error, (unsigned int)h->last_error);
+
+  /* HTTP Banner (filled by service_probe via main.c) */
+  if (h->banner[0] != '\0') {
+    draw_textf(font, 50.0f, 332.0f, C_ACCENT, 0.84f, "HTTP Banner: %s", h->banner);
+  } else {
+    draw_textf(font, 50.0f, 332.0f, C_GRID, 0.84f, "HTTP Banner: -");
+  }
+
+  /* UPnP info (if this host is in the UPnP table) */
+  for (uint32_t u = 0; u < scanner->upnp_count; u++) {
+    const UPnPDevice *ud = &scanner->upnp_devices[u];
+    if (strcmp(ud->ip, h->ip) != 0) {
+      continue;
+    }
+    const unsigned int igd_color = ud->is_igd ? C_WARN : C_PRIMARY;
+    draw_textf(font, 50.0f, 362.0f, igd_color, 0.84f,
+               "UPnP%s  %s / %s",
+               ud->is_igd ? " [IGD]" : "",
+               ud->manufacturer[0] ? ud->manufacturer : "-",
+               ud->model[0]        ? ud->model        : "-");
+    draw_textf(font, 50.0f, 384.0f, C_GRID, 0.76f, "USN: %s", ud->usn[0] ? ud->usn : "-");
+    break;
+  }
+
+  draw_textf(font, 50.0f, 410.0f, C_GRID, 0.84f, "Last error: %d (0x%08X)",
+             h->last_error, (unsigned int)h->last_error);
 }
 
 static void draw_settings_screen(vita2d_pgf *font, int settings_index, ScanProfile scan_profile, int audio_enabled) {
@@ -666,6 +705,136 @@ static void draw_alerts_screen(const AlertManager *alerts, int scroll, vita2d_pg
   }
 }
 
+static const char *nfc_type_name(uint8_t t) {
+  switch (t) {
+    case 1: return "NFC-A";
+    case 2: return "NFC-B";
+    case 3: return "NFC-F";
+    default: return "?";
+  }
+}
+
+static void draw_nfc_screen(const NfcScannerMetrics *nfc, int scroll,
+                             vita2d_pgf *font, uint64_t now_us) {
+  vita2d_draw_rectangle(24.0f, 72.0f, 912.0f, 430.0f, C_PANEL);
+  draw_textf(font, 42.0f, 104.0f, C_TEXT, 1.0f, "NFC SCANNER");
+
+  const unsigned int hw_color  = nfc->hw_available ? C_PRIMARY : C_WARN;
+  const unsigned int det_color = nfc->detecting    ? C_PRIMARY : C_GRID;
+  draw_textf(font, 42.0f, 132.0f, hw_color,  0.8f, "HW: %s",
+             nfc->hw_available ? "AVAILABLE" : "UNAVAILABLE");
+  draw_textf(font, 200.0f, 132.0f, det_color, 0.8f, "Detect: %s",
+             nfc->detecting ? "ON" : "OFF");
+  draw_textf(font, 360.0f, 132.0f, C_TEXT, 0.8f, "Tags: %u  Total seen: %u",
+             nfc->tag_count, nfc->total_seen);
+  draw_textf(font, 720.0f, 132.0f, C_GRID, 0.76f, "Err: %d", nfc->last_error);
+
+  /* Table header */
+  const float tx = 42.0f;
+  const float ty = 158.0f;
+  const float tw = 876.0f;
+  const float rh = 30.0f;
+  const int   rv = 10;
+
+  vita2d_draw_rectangle(tx, ty, tw, rh, RGBA8(26, 44, 47, 255));
+  draw_textf(font, tx + 10.0f,  ty + 21.0f, C_TEXT, 0.76f, "UID");
+  draw_textf(font, tx + 310.0f, ty + 21.0f, C_TEXT, 0.76f, "Type");
+  draw_textf(font, tx + 400.0f, ty + 21.0f, C_TEXT, 0.76f, "ATQA");
+  draw_textf(font, tx + 490.0f, ty + 21.0f, C_TEXT, 0.76f, "SAK");
+  draw_textf(font, tx + 570.0f, ty + 21.0f, C_TEXT, 0.76f, "Seen");
+  draw_textf(font, tx + 660.0f, ty + 21.0f, C_TEXT, 0.76f, "Age(s)");
+
+  int scroll_off = scroll;
+  if (scroll_off < 0) { scroll_off = 0; }
+  for (int r = 0; r < rv; r++) {
+    const int idx = scroll_off + r;
+    const float y = ty + rh + rh * (float)r;
+    vita2d_draw_rectangle(tx, y, tw, rh - 1.0f, RGBA8(19, 33, 36, 255));
+    if (idx < 0 || (uint32_t)idx >= nfc->tag_count) {
+      draw_textf(font, tx + 12.0f, y + 21.0f, C_GRID, 0.72f, "-");
+      continue;
+    }
+    const NfcTagRecord *tr = &nfc->tags[(uint32_t)idx];
+    const uint64_t age_s = (now_us > tr->last_seen_us)
+                             ? (now_us - tr->last_seen_us) / 1000000ULL : 0ULL;
+    draw_textf(font, tx + 10.0f,  y + 21.0f, C_PRIMARY, 0.72f, "%s", tr->uid_str);
+    draw_textf(font, tx + 310.0f, y + 21.0f, C_TEXT,    0.72f, "%s", nfc_type_name(tr->tag_type));
+    draw_textf(font, tx + 400.0f, y + 21.0f, C_GRID,    0.70f, "%04X", (unsigned int)tr->atqa);
+    draw_textf(font, tx + 490.0f, y + 21.0f, C_GRID,    0.70f, "%02X", (unsigned int)tr->sak);
+    draw_textf(font, tx + 570.0f, y + 21.0f, C_TEXT,    0.72f, "%u", tr->seen_count);
+    draw_textf(font, tx + 660.0f, y + 21.0f, C_GRID,    0.70f, "%llu", (unsigned long long)age_s);
+  }
+}
+
+static const char *security_name(uint8_t s) {
+  switch (s) {
+    case 0: return "Open";
+    case 1: return "WEP";
+    case 2: return "WPA";
+    case 3: return "WPA2";
+    case 4: return "WPA3";
+    default: return "?";
+  }
+}
+
+static void draw_wifi_ap_screen(const WifiScannerMetrics *wifi, int scroll,
+                                vita2d_pgf *font, uint64_t now_us) {
+  (void)now_us;
+  vita2d_draw_rectangle(24.0f, 72.0f, 912.0f, 430.0f, C_PANEL);
+  draw_textf(font, 42.0f, 104.0f, C_TEXT, 1.0f, "WI-FI AP SCANNER");
+
+  const unsigned int scan_color = wifi->scanning ? C_ACCENT : C_GRID;
+  draw_textf(font, 42.0f, 132.0f, scan_color, 0.8f, "Status: %s",
+             wifi->scanning ? "SCANNING..." : (wifi->scan_done ? "DONE" : "IDLE"));
+  draw_textf(font, 280.0f, 132.0f, C_TEXT, 0.8f, "APs: %u  Scans: %u",
+             wifi->ap_count, wifi->scan_count);
+  draw_textf(font, 600.0f, 132.0f, C_GRID, 0.76f, "Err: %d", wifi->last_error);
+
+  /* Table */
+  const float tx = 42.0f;
+  const float ty = 158.0f;
+  const float tw = 876.0f;
+  const float rh = 30.0f;
+  const int   rv = 10;
+
+  vita2d_draw_rectangle(tx, ty, tw, rh, RGBA8(26, 44, 47, 255));
+  draw_textf(font, tx + 10.0f,  ty + 21.0f, C_TEXT, 0.76f, "SSID");
+  draw_textf(font, tx + 290.0f, ty + 21.0f, C_TEXT, 0.76f, "BSSID");
+  draw_textf(font, tx + 470.0f, ty + 21.0f, C_TEXT, 0.76f, "RSSI");
+  draw_textf(font, tx + 580.0f, ty + 21.0f, C_TEXT, 0.76f, "CH");
+  draw_textf(font, tx + 640.0f, ty + 21.0f, C_TEXT, 0.76f, "Security");
+  draw_textf(font, tx + 790.0f, ty + 21.0f, C_TEXT, 0.76f, "WPS");
+
+  int scroll_off = scroll;
+  if (scroll_off < 0) { scroll_off = 0; }
+  for (int r = 0; r < rv; r++) {
+    const int idx = scroll_off + r;
+    const float y = ty + rh + rh * (float)r;
+    vita2d_draw_rectangle(tx, y, tw, rh - 1.0f, RGBA8(19, 33, 36, 255));
+    if (idx < 0 || (uint32_t)idx >= wifi->ap_count) {
+      draw_textf(font, tx + 12.0f, y + 21.0f, C_GRID, 0.72f, "-");
+      continue;
+    }
+    const WifiApInfo *ap = &wifi->aps[(uint32_t)idx];
+
+    /* RSSI bar color */
+    const unsigned int rssi_color = (ap->rssi_dbm > -60) ? C_PRIMARY :
+                                    (ap->rssi_dbm > -75) ? C_ACCENT  : C_WARN;
+
+    char ssid_trunc[22];
+    truncate_copy(ap->ssid, ssid_trunc, sizeof(ssid_trunc));
+
+    draw_textf(font, tx + 10.0f,  y + 21.0f, ap->is_new ? C_PRIMARY : C_TEXT,
+               0.72f, "%s%s", ap->is_new ? "[NEW] " : "", ssid_trunc);
+    draw_textf(font, tx + 290.0f, y + 21.0f, C_GRID,    0.70f, "%s", ap->bssid_str);
+    draw_textf(font, tx + 470.0f, y + 21.0f, rssi_color, 0.72f, "%d", (int)ap->rssi_dbm);
+    draw_textf(font, tx + 580.0f, y + 21.0f, C_TEXT,    0.72f, "%u", (unsigned int)ap->channel);
+    draw_textf(font, tx + 640.0f, y + 21.0f, C_TEXT,    0.72f, "%s", security_name(ap->security));
+    draw_textf(font, tx + 790.0f, y + 21.0f, ap->wps ? C_ACCENT : C_GRID,
+               0.72f, "%s", ap->wps ? "YES" : "-");
+  }
+}
+
 static void draw_bt_screen(const BtMonitorMetrics *bt, vita2d_pgf *font, uint64_t now_us) {
   vita2d_draw_rectangle(24.0f, 72.0f, 912.0f, 430.0f, C_PANEL);
   draw_textf(font, 42.0f, 104.0f, C_TEXT, 1.0f, "BLUETOOTH TOOLS");
@@ -688,7 +857,7 @@ static void draw_bt_screen(const BtMonitorMetrics *bt, vita2d_pgf *font, uint64_
   for (uint32_t i = 0; i < bt->paired_count && i < BT_MONITOR_MAX_PAIRED; i++) {
     const BtPairedDevice *d = &bt->paired[i];
     const float y = left_y + 48.0f + 34.0f * (float)i;
-    draw_textf(font, left_x + 12.0f, y, C_TEXT, 0.74f, "%u) %s", i + 1U, d->name);
+    draw_textf(font, left_x + 12.0f, y, C_TEXT, 0.74f, "%u) %s (%s)", i + 1U, d->name, d->device_type);
     draw_textf(font, left_x + 34.0f, y + 16.0f, C_GRID, 0.70f, "%s  class:0x%06X", d->mac, d->bt_class);
   }
   if (bt->paired_count == 0) {
@@ -699,21 +868,41 @@ static void draw_bt_screen(const BtMonitorMetrics *bt, vita2d_pgf *font, uint64_
   const float right_y = 154.0f;
   const float right_w = 440.0f;
   vita2d_draw_rectangle(right_x, right_y, right_w, box_h, RGBA8(16, 27, 31, 255));
-  draw_textf(font, right_x + 10.0f, right_y + 22.0f, C_TEXT, 0.82f, "Inquiry events (%u)", bt->event_count);
-  if (bt->event_count == 0) {
-    draw_textf(font, right_x + 10.0f, right_y + 58.0f, C_GRID, 0.76f, "No event yet. Start inquiry with TRIANGLE.");
-    return;
-  }
 
   const int rows = 10;
-  for (int i = 0; i < rows; i++) {
-    const int idx = (int)bt->event_count - 1 - i;
-    if (idx < 0) break;
-    const BtEventEntry *e = &bt->events[idx];
-    const uint64_t age_s = (now_us > e->timestamp_us) ? ((now_us - e->timestamp_us) / 1000000ULL) : 0ULL;
-    const float y = right_y + 52.0f + 28.0f * (float)i;
-    draw_textf(font, right_x + 10.0f, y, C_TEXT, 0.72f, "id:%02u  %s  -%llus",
-               (unsigned int)e->event_id, e->mac, (unsigned long long)age_s);
+  if (bt->inquiry_count > 0) {
+    /* Show discovered devices (inquiry results with device type) */
+    draw_textf(font, right_x + 10.0f, right_y + 22.0f, C_TEXT, 0.82f,
+               "Discovered (%u)", bt->inquiry_count);
+    for (int i = 0; i < rows; i++) {
+      const uint32_t idx = (uint32_t)i;
+      if (idx >= bt->inquiry_count) { break; }
+      const BtInquiryResult *d = &bt->discovered[idx];
+      const uint64_t age_s = (now_us > d->first_seen_us)
+                               ? ((now_us - d->first_seen_us) / 1000000ULL) : 0ULL;
+      const float y = right_y + 52.0f + 28.0f * (float)i;
+      draw_textf(font, right_x + 10.0f, y, C_TEXT, 0.72f, "%s  [%s]  -%llus",
+                 d->mac, d->device_type, (unsigned long long)age_s);
+    }
+  } else {
+    /* Fall back to raw inquiry events */
+    draw_textf(font, right_x + 10.0f, right_y + 22.0f, C_TEXT, 0.82f,
+               "Inquiry events (%u)", bt->event_count);
+    if (bt->event_count == 0) {
+      draw_textf(font, right_x + 10.0f, right_y + 58.0f, C_GRID, 0.76f,
+                 "No event yet. Start inquiry with TRIANGLE.");
+      return;
+    }
+    for (int i = 0; i < rows; i++) {
+      const int idx = (int)bt->event_count - 1 - i;
+      if (idx < 0) { break; }
+      const BtEventEntry *e = &bt->events[idx];
+      const uint64_t age_s = (now_us > e->timestamp_us)
+                               ? ((now_us - e->timestamp_us) / 1000000ULL) : 0ULL;
+      const float y = right_y + 52.0f + 28.0f * (float)i;
+      draw_textf(font, right_x + 10.0f, y, C_TEXT, 0.72f, "id:%02u  %s  -%llus",
+                 (unsigned int)e->event_id, e->mac, (unsigned long long)age_s);
+    }
   }
 }
 
@@ -739,6 +928,10 @@ void render_frame(const NetMonitor *monitor,
                   int exports_scroll,
                   int exports_selected,
                   int exports_compare_index,
+                  const NfcScannerMetrics *nfc,
+                  int nfc_scroll,
+                  const WifiScannerMetrics *wifi_ap,
+                  int wifi_scroll,
                   AppScreen screen,
                   vita2d_pgf *font,
                   uint64_t now_us) {
@@ -761,6 +954,10 @@ void render_frame(const NetMonitor *monitor,
     draw_settings_screen(font, settings_index, scan_profile, audio_enabled);
   } else if (screen == APP_SCREEN_BT) {
     draw_bt_screen(bt, font, now_us);
+  } else if (screen == APP_SCREEN_NFC) {
+    draw_nfc_screen(nfc, nfc_scroll, font, now_us);
+  } else if (screen == APP_SCREEN_WIFI_AP) {
+    draw_wifi_ap_screen(wifi_ap, wifi_scroll, font, now_us);
   } else if (screen == APP_SCREEN_EXPORTS) {
     draw_exports_screen(export_viewer, exports_scroll, exports_selected, exports_compare_index, font);
   } else {

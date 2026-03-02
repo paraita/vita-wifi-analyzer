@@ -8,6 +8,9 @@
 #include "export_viewer.h"
 #include "ui_audio.h"
 #include "bt_monitor.h"
+#include "nfc_scanner.h"
+#include "wifi_scanner.h"
+#include "service_probe.h"
 
 #include <psp2/ctrl.h>
 #include <psp2/kernel/processmgr.h>
@@ -223,6 +226,12 @@ int main(void) {
   export_viewer_init(&export_viewer);
   UiAudio ui_audio;
   ui_audio_init(&ui_audio);
+  NfcScanner nfc_scanner;
+  nfc_scanner_init(&nfc_scanner);
+  WifiScanner wifi_scanner;
+  wifi_scanner_init(&wifi_scanner);
+  ServiceProbe service_probe;
+  service_probe_init(&service_probe);
 
   const uint64_t poll_interval_us = 1000000ULL / NETMON_SAMPLE_HZ;
   uint64_t next_poll = 0;
@@ -241,11 +250,15 @@ int main(void) {
   int exports_scroll = 0;
   int exports_selected = 0;
   int exports_compare_index = -1;
+  int nfc_scroll = 0;
+  int wifi_scroll = 0;
   AppScreen prev_screen = screen;
   uint32_t prev_scan_round = 0;
   int prev_scan_error = 0;
   uint32_t prev_host_count = 0;
   char prev_hosts[LAN_SCANNER_MAX_HOSTS][16];
+  uint32_t prev_nfc_tag_count = 0;
+  uint32_t prev_wifi_ap_count = 0;
   bool local_scan_armed = false;
   unsigned int prev_buttons = 0;
   bool running = true;
@@ -260,6 +273,9 @@ int main(void) {
     }
 
     lan_scanner_tick(&scanner, now);
+    nfc_scanner_poll(&nfc_scanner, now);
+    wifi_scanner_tick(&wifi_scanner, now);
+    service_probe_tick(&service_probe, now);
 
     SceCtrlData pad;
     sceCtrlPeekBufferPositive(0, &pad, 1);
@@ -295,12 +311,71 @@ int main(void) {
     BtMonitorMetrics bt_metrics;
     bt_monitor_get_metrics(&bt_monitor, &bt_metrics);
 
+    NfcScannerMetrics nfc_metrics;
+    nfc_scanner_get_metrics(&nfc_scanner, &nfc_metrics);
+
+    WifiScannerMetrics wifi_metrics;
+    wifi_scanner_get_metrics(&wifi_scanner, &wifi_metrics);
+
+    ServiceProbeMetrics probe_metrics;
+    service_probe_get_metrics(&service_probe, &probe_metrics);
+
+    /* Copy HTTP banners into scanner_metrics for HOST_DETAIL render */
+    for (uint32_t pi = 0; pi < probe_metrics.probed_count; pi++) {
+      const ServiceProbeResult *pr = &probe_metrics.results[pi];
+      if (!pr->valid) {
+        continue;
+      }
+      for (uint32_t hi = 0; hi < scanner_metrics.host_count; hi++) {
+        if (strcmp(scanner_metrics.hosts[hi].ip, pr->ip) == 0) {
+          if (pr->status_code > 0) {
+            snprintf(scanner_metrics.hosts[hi].banner,
+                     sizeof(scanner_metrics.hosts[hi].banner),
+                     "HTTP %d | %s%s%s",
+                     pr->status_code,
+                     pr->server[0]      ? pr->server      : "-",
+                     pr->powered_by[0]  ? " | " : "",
+                     pr->powered_by[0]  ? pr->powered_by  : "");
+          }
+          break;
+        }
+      }
+    }
+
+    /* NFC: alert on new tags */
+    if (nfc_metrics.tag_count > prev_nfc_tag_count &&
+        nfc_metrics.tag_count > 0) {
+      const NfcTagRecord *t = &nfc_metrics.tags[nfc_metrics.tag_count - 1];
+      alerts_push(&alerts, now, ALERT_INFO, "NFC tag: %s type=%s",
+                  t->uid_str,
+                  (t->tag_type == 1) ? "NFC-A" :
+                  (t->tag_type == 2) ? "NFC-B" :
+                  (t->tag_type == 3) ? "NFC-F" : "?");
+    }
+    prev_nfc_tag_count = nfc_metrics.tag_count;
+
+    /* WiFi: alert on new APs after a completed scan */
+    if (wifi_metrics.scan_done && wifi_metrics.ap_count > prev_wifi_ap_count) {
+      for (uint32_t ai = 0; ai < wifi_metrics.ap_count; ai++) {
+        if (wifi_metrics.aps[ai].is_new) {
+          alerts_push(&alerts, now, ALERT_INFO, "New AP: %s (%s)",
+                      wifi_metrics.aps[ai].ssid[0] ? wifi_metrics.aps[ai].ssid : "<hidden>",
+                      wifi_metrics.aps[ai].bssid_str);
+        }
+      }
+    }
+    prev_wifi_ap_count = wifi_metrics.ap_count;
+
     if (screen != prev_screen && screen == APP_SCREEN_EXPORTS) {
       (void)export_json_rebuild_index();
       (void)export_viewer_reload(&export_viewer);
       exports_scroll = 0;
       exports_selected = 0;
       exports_compare_index = -1;
+    }
+    if (screen != prev_screen && screen == APP_SCREEN_HOST_DETAIL) {
+      /* Arm HTTP banner grabbing for the newly selected host */
+      service_probe_arm(&service_probe, &scanner_metrics);
     }
     if (screen != prev_screen) {
       ui_audio_event(&ui_audio, UI_AUDIO_NAV);
@@ -522,6 +597,52 @@ int main(void) {
       if (pressed & SCE_CTRL_SELECT) {
         bt_monitor_poll(&bt_monitor, now);
       }
+    } else if (screen == APP_SCREEN_NFC) {
+      if (pressed & SCE_CTRL_TRIANGLE) {
+        const int enable = nfc_metrics.detecting ? 0 : 1;
+        const int rc = nfc_scanner_set_detecting(&nfc_scanner, enable);
+        if (rc < 0) {
+          alerts_push(&alerts, now, ALERT_ERROR, "NFC detect toggle failed: %d", rc);
+          ui_audio_event(&ui_audio, UI_AUDIO_ERROR);
+        } else {
+          alerts_push(&alerts, now, ALERT_INFO, "NFC detection: %s", enable ? "ON" : "OFF");
+          ui_audio_event(&ui_audio, UI_AUDIO_SCAN_TOGGLE);
+        }
+      }
+      if (pressed & SCE_CTRL_SELECT) {
+        nfc_scanner_clear(&nfc_scanner);
+        nfc_scroll = 0;
+        prev_nfc_tag_count = 0;
+        alerts_push(&alerts, now, ALERT_INFO, "NFC tag list cleared");
+        ui_audio_event(&ui_audio, UI_AUDIO_NAV);
+      }
+      {
+        const int max_nfc_scroll = (nfc_metrics.tag_count > 10U)
+                                     ? (int)(nfc_metrics.tag_count - 10U) : 0;
+        if (pressed & SCE_CTRL_UP)   { nfc_scroll--; }
+        if (pressed & SCE_CTRL_DOWN) { nfc_scroll++; }
+        if (nfc_scroll < 0) { nfc_scroll = 0; }
+        if (nfc_scroll > max_nfc_scroll) { nfc_scroll = max_nfc_scroll; }
+      }
+    } else if (screen == APP_SCREEN_WIFI_AP) {
+      if (pressed & SCE_CTRL_TRIANGLE) {
+        const int rc = wifi_scanner_start_scan(&wifi_scanner);
+        if (rc < 0) {
+          alerts_push(&alerts, now, ALERT_ERROR, "WiFi scan failed: %d", rc);
+          ui_audio_event(&ui_audio, UI_AUDIO_ERROR);
+        } else {
+          alerts_push(&alerts, now, ALERT_INFO, "WiFi AP scan started");
+          ui_audio_event(&ui_audio, UI_AUDIO_SCAN_TOGGLE);
+        }
+      }
+      {
+        const int max_wifi_scroll = (wifi_metrics.ap_count > 10U)
+                                      ? (int)(wifi_metrics.ap_count - 10U) : 0;
+        if (pressed & SCE_CTRL_UP)   { wifi_scroll--; }
+        if (pressed & SCE_CTRL_DOWN) { wifi_scroll++; }
+        if (wifi_scroll < 0) { wifi_scroll = 0; }
+        if (wifi_scroll > max_wifi_scroll) { wifi_scroll = max_wifi_scroll; }
+      }
     } else if (screen == APP_SCREEN_EXPORTS) {
       const int max_scroll = (export_viewer.count > 10U) ? (int)(export_viewer.count - 10U) : 0;
       if (pressed & SCE_CTRL_UP) {
@@ -584,9 +705,11 @@ int main(void) {
                  &alerts, &bt_metrics, scan_source, scan_view.indices, scan_view.count, scan_filter, scan_sort,
                  scan_scroll, selected_host_index, host_detail_index, alerts_scroll, settings_index, scan_profile,
                  ui_audio.enabled, &export_viewer, exports_scroll, exports_selected, exports_compare_index,
+                 &nfc_metrics, nfc_scroll, &wifi_metrics, wifi_scroll,
                  screen, font, now);
   }
 
+  nfc_scanner_term(&nfc_scanner);
   proxy_client_stop(&proxy);
   ui_audio_term(&ui_audio);
   lan_scanner_stop(&scanner);

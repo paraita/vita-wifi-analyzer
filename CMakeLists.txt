@@ -28,6 +28,9 @@ add_executable(${PROJECT_NAME}
   src/proxy_client.c
   src/net_monitor.c
   src/bt_monitor.c
+  src/nfc_scanner.c
+  src/wifi_scanner.c
+  src/service_probe.c
   src/render.c
 )
 

@@ -18,6 +18,7 @@ typedef struct LanHostResult {
   char ip[16];
   char hostname[64];
   char service_hint[64];
+  char banner[96];           /* HTTP banner filled by service_probe */
   uint8_t alive;
   uint8_t is_gateway;
   uint8_t open_port_count;
@@ -49,6 +50,10 @@ typedef struct LanScannerMetrics {
   uint32_t host_count;
   LanHostResult hosts[LAN_SCANNER_MAX_HOSTS];
   int last_error;
+
+  /* UPnP devices discovered via SSDP */
+  uint32_t   upnp_count;
+  UPnPDevice upnp_devices[DISCOVERY_MAX_UPNP];
 } LanScannerMetrics;
 
 typedef struct LanScanner {
